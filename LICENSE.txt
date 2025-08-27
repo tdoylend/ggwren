@@ -19,7 +19,3 @@ freely, subject to the following restrictions:
 
 3. This notice may not be removed or altered from any source
    distribution.
-
-Materials found in the "ext/" subfolder are not part of GGWren and are
-licensed separately; please consult their respective license files or
-product pages for information.
