@@ -59,12 +59,16 @@ int reported_compile_error_count = 0;
 int hidden_compile_error_count = 0;
 CModule *cmodules = NULL;
 CModule *bound_cmodule = NULL;
+char *scriptDir = NULL;
+char *scriptPath = NULL;
 
 const char *GG_SOURCE = 
     "class GG {\n"
     "foreign static version\n"
     "foreign static cmodules\n"
     "foreign static bind(cmodule)\n"
+    "foreign static scriptDir\n"
+    "foreign static scriptPath\n"
     "}\n"
 ;
 
@@ -161,6 +165,14 @@ static void apiStatic__GG__bind__1(WrenVM *vm) {
     }
 }
 
+void apiStatic__GG__scriptDir__getter(WrenVM *vm) {
+    wrenSetSlotString(vm, 0, scriptDir);
+}
+
+void apiStatic__GG__scriptPath__getter(WrenVM *vm) {
+    wrenSetSlotString(vm, 0, scriptPath);
+}
+
 WrenForeignMethodFn wren__bindForeignMethod(
     WrenVM *vm,
     const char *module,
@@ -169,6 +181,7 @@ WrenForeignMethodFn wren__bindForeignMethod(
     const char *signature_without_static
 ) {
     WrenForeignMethodFn result = NULL;
+    bool found = false;
     char *signature = malloc(strlen(signature_without_static) + 12);
     strcpy(signature, isStatic ? "static " : "");
     strcat(signature, signature_without_static);
@@ -177,14 +190,24 @@ WrenForeignMethodFn wren__bindForeignMethod(
             if (strcmp(signature, "static bind(_)") == 0) result = &apiStatic__GG__bind__1;
             if (strcmp(signature, "static version") == 0) result = &apiStatic__GG__version__getter;
             if (strcmp(signature, "static cmodules")== 0) result = &apiStatic__GG__cmodules__getter;
+            if (strcmp(signature, "static scriptDir")== 0)
+                    result = &apiStatic__GG__scriptDir__getter;
+            if (strcmp(signature, "static scriptPath")== 0)
+                    result = &apiStatic__GG__scriptPath__getter;
         }
     }
-    if (!result && !bound_cmodule) {
+    if (result) found = true;
+    if (strcmp(module, "meta") == 0) {
+        if (strcmp(class, "Meta") == 0) {
+            found = true;
+        }
+    }
+    if (!found && !bound_cmodule) {
         fprintf(stderr, "Module `%s` declares foreign methods but did not call GG.bind(..).\n",
                 module);
         exit(2);
     }
-    if (!result) {
+    if (!found) {
         for (
             ForeignMethod *entry = bound_cmodule->foreignMethods;
             !result && entry;
@@ -198,7 +221,8 @@ WrenForeignMethodFn wren__bindForeignMethod(
             }
         }
     }
-    if (!result) {
+    if (result) found = true;
+    if (!found) {
         fprintf(stderr, "Module %s defines class %s with foreign method `%s`,\n",
                 module, class, signature);
         fprintf(stderr, "but it is not implemented in the bound cmodule `%s`.\n",
@@ -243,6 +267,14 @@ void wren__error(
     int line,
     const char *message
 ) {
+    if (type != WREN_ERROR_COMPILE) {
+        if (hidden_compile_error_count > 0) {
+            fprintf(stderr, "(+%d more error%s)\n", hidden_compile_error_count,
+                    hidden_compile_error_count != 1 ? "s" : "");
+        }
+        hidden_compile_error_count = 0;
+    }
+
     switch (type) {
         case WREN_ERROR_COMPILE: {
             if (reported_compile_error_count < 3) {
@@ -381,6 +413,7 @@ void finish_buffer(Buffer *buffer) {
 
 int main(int argc, char **argv) {
     const char *path = NULL;
+    char *module_name = NULL;
     enum { RUN_CODE, HELP, LIST_SEARCH_DIRS, LIST_CMODULES, ERROR } mode = RUN_CODE;
     push_search_dir(NULL); // For the directory containing the root module
     char *env_search_dirs = getenv("GG_SEARCH_DIRS");
@@ -424,6 +457,7 @@ int main(int argc, char **argv) {
                     path = arg;
                     global_argv = &argv[i];
                     global_argc = argc - i;
+                    i = argc;
                 }
             } break;
         }
@@ -434,15 +468,39 @@ int main(int argc, char **argv) {
     }
 
     loadCModules();
-
+    /*
+    for (CModule *cmodule = cmodules; cmodule; cmodule = cmodule->next) {
+        printf("# %s\n", cmodule->name);
+        for (ForeignClass *class = cmodule->foreignClasses; class; class=class->next) {
+            printf("  +- class %s\n", class->name);
+        }
+        for (ForeignMethod *method = cmodule->foreignMethods; method; method=method->next) {
+            printf("  +- %s.%s\n", method->class, method->signature);
+        }
+    }
+    */
     switch (mode) {
         case RUN_CODE: {
             char *source = readEntireFile(path);
             if (source) {
                 char *real_path = realpath(path, NULL);
+                module_name = dup_string(real_path);
+                scriptPath = dup_string(real_path);
                 char *dir = dirname(real_path);
                 search_dirs[0] = dup_string(dir);
+                scriptDir = dup_string(dir);
                 free(real_path);
+
+                if (strlen(module_name) >= 5) {
+                    if (strcmp(&module_name[strlen(module_name)-5], ".wren") == 0) {
+                        module_name[strlen(module_name)-5] = 0;
+                    }
+                }
+                for (char *i = &module_name[strlen(module_name)-1]; i > module_name; i --) {
+                    if ((*i == '\\') || (*i == '/')) {
+                        memmove(module_name, i + 1, strlen(i));
+                    }
+                }
             } else {
                 fprintf(stderr, "Could not load `%s`.\n", path);
                 mode = ERROR;
@@ -458,13 +516,9 @@ int main(int argc, char **argv) {
                 WrenVM *vm = wrenNewVM(&config);
                 WrenInterpretResult result = wrenInterpret(
                     vm,
-                    path,
+                    module_name,
                     source
                 );
-                if (hidden_compile_error_count > 0) {
-                    fprintf(stderr, "(+%d more error%s)\n", hidden_compile_error_count,
-                            hidden_compile_error_count != 1 ? "s" : "");
-                }
                 wrenFreeVM(vm);
                 if (result != WREN_RESULT_SUCCESS) mode = ERROR;
             }
@@ -499,6 +553,9 @@ int main(int argc, char **argv) {
     for (size_t i = 0; i < search_dir_count; i ++) {
         if (search_dirs[i]) free(search_dirs[i]);
     }
+    if (scriptPath) free(scriptPath);
+    if (scriptDir) free(scriptDir);
     if (search_dirs) free(search_dirs);
+    if (module_name) free(module_name);
     return mode == ERROR ? 2 : 0;
 }

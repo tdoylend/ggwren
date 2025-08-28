@@ -2,3 +2,5 @@
 *.swo
 ggwren
 ext/*
+test/tests/JSONTestSuite
+

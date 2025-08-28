@@ -3,6 +3,11 @@
 #include <string.h>
 #include <stdio.h>
 
+#include <dirent.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include "ggwren.h"
 
 extern char **environ;
@@ -145,11 +150,11 @@ static void apiStatic__Platform__arch__getter(WrenVM *vm) {
     wrenSetSlotString(vm, 0, arch);
 }
 
-static void abortWithErrno(WrenVM *vm, int e) {
+static void abortErrno(WrenVM *vm, int e) {
     char *s = strerror(e);
     char *message = malloc(strlen(s) + 32);
     strcpy(message, s);
-    sprintf(&message[strlen(message)], "(OS error %d)", e);
+    sprintf(&message[strlen(message)], " (OS error %d)", e);
     wrenSetSlotString(vm, 0, message);
     free(message);
     wrenAbortFiber(vm, 0);
@@ -208,7 +213,7 @@ static void apiOpSetIndex__Environ__1(WrenVM *vm) {
     if (ok) {
         int result = setenv(key, value, 1);
         if (result < 0) {
-            abortWithErrno(vm, errno);
+            abortErrno(vm, errno);
         } else {
             wrenSetSlotNull(vm, 0);
         }
@@ -254,6 +259,284 @@ void apiStatic__Process__arguments__getter(WrenVM *vm) {
     }
 }
 
+typedef struct File File;
+struct File {
+    int fd;
+};
+
+static void apiAllocate__File(WrenVM *vm) {
+    const char *path = wrenGetSlotString(vm, 1);
+    const char *mode = wrenGetSlotString(vm, 2);
+    bool reading = false;
+    bool writing = false;
+    bool appending = false;
+    bool exclusive = false;
+    for (const char *cursor = mode; *cursor; cursor ++) {
+        char c = *cursor;
+        if (c == 'r') {
+            reading = true;
+        } else if (c == 'w') {
+            writing = true;
+        } else if (c == 'a') {
+            appending = true;
+        } else if (c == 't') {
+            // do nothing; Wren makes no distinction between text and binary
+        } else if (c == 'b') {
+            // do nothing; Wren makes no distinction between text and binary
+        } else if (c == 'x') {
+            exclusive = true;
+        } else if (c == '+') {
+            reading = true;
+            writing = true;
+        }
+    }
+    File *file = wrenSetSlotNewForeign(vm, 0, 0, sizeof(File));
+    int flags = 0;
+    if (reading && (writing || appending)) flags |= O_RDWR;
+    else if (reading) flags |= O_RDONLY;
+    else if (writing || appending) flags |= O_WRONLY;
+    if (exclusive) flags |= O_EXCL;
+    if (writing || appending) flags |= O_CREAT;
+    if (writing) flags |= O_TRUNC;
+    if (appending) flags |= O_APPEND;
+    file->fd = open(path, flags, (writing || appending) ? 0644 : 0);
+    if (file->fd < 0) {
+        abortErrno(vm, errno);
+    } else {
+        // do nothing
+    }
+}
+
+static void apiFinalize__File(void *file_raw) {
+    File *file = file_raw;
+    if (file->fd >= 0) {
+        close(file->fd);
+    }
+}
+
+static void api__File__size__getter(WrenVM *vm) {
+    File *file = wrenGetSlotForeign(vm, 0);
+    if (file->fd >= 0) {
+        struct stat st; 
+        if (fstat(file->fd, &st) < 0) {
+            abortErrno(vm, errno);
+        } else {
+            wrenSetSlotDouble(vm, 0, (double)(st.st_size));
+        }
+    } else {
+        wrenSetSlotString(vm, 0, "The file has already been closed.");
+        wrenAbortFiber(vm, 0);
+    }
+}
+
+static void api__File__read__1(WrenVM *vm) {
+    File *file = wrenGetSlotForeign(vm, 0);
+    size_t count = (size_t)wrenGetSlotDouble(vm, 1);
+    if (file->fd >= 0) {
+        char short_buffer[4096];
+        char *buffer = short_buffer;
+        bool buffer_is_long = false;
+        if (count > 4096) {
+            buffer = malloc(count);
+            buffer_is_long = true;
+        }
+        ssize_t bytes_read = read(file->fd, buffer, count);
+        if (bytes_read >= 0) {
+            wrenSetSlotBytes(vm, 0, buffer, bytes_read);
+        } else {
+            abortErrno(vm, errno);
+        }
+        if (buffer_is_long) free(buffer);
+    } else {
+        wrenSetSlotString(vm, 0, "The file has already been closed.");
+        wrenAbortFiber(vm, 0);
+    }
+}
+
+void api__File__seek__1(WrenVM *vm) {
+    File *file = wrenGetSlotForeign(vm, 0);
+    size_t where = (size_t)wrenGetSlotDouble(vm, 1);
+    if (file->fd >= 0) {
+        if (lseek(file->fd, where, SEEK_SET) < 0) {
+            abortErrno(vm, errno);
+        } else {
+            wrenSetSlotNull(vm, 0);
+        }
+    } else {
+        wrenSetSlotString(vm, 0, "The file has already been closed.");
+        wrenAbortFiber(vm, 0);
+    }
+}
+
+void api__File__tell__0(WrenVM *vm) {
+    File *file = wrenGetSlotForeign(vm, 0);
+    if (file->fd >= 0) {
+        off_t where = lseek(file->fd, 0, SEEK_CUR);
+        if (where < 0) {
+            abortErrno(vm, errno);
+        } else {
+            wrenSetSlotDouble(vm, 0, (double)where);
+        }
+    } else {
+        wrenSetSlotString(vm, 0, "The file has already been closed.");
+        wrenAbortFiber(vm, 0);
+    }
+}
+
+void api__File__write__1(WrenVM *vm) {
+    File *file = wrenGetSlotForeign(vm, 0);
+    if (file->fd >= 0) {
+        int length;
+        const uint8_t *data = wrenGetSlotBytes(vm, 1, &length);
+        ssize_t bytes_written = write(file->fd, data, length);
+        if (bytes_written < 0) {
+            abortErrno(vm, errno);
+        } else {
+            wrenSetSlotDouble(vm, 0, (double)bytes_written);
+        }
+    } else {
+        wrenSetSlotString(vm, 0, "The file has already been closed.");
+        wrenAbortFiber(vm, 0);
+    }
+}
+
+void api__File__close__0(WrenVM *vm) {
+    File *file = wrenGetSlotForeign(vm, 0);
+    if (file->fd >= 0) {
+        close(file->fd);
+    } else {
+        wrenSetSlotString(vm, 0, "The file has already been closed.");
+        wrenAbortFiber(vm, 0);
+    }
+    
+}
+
+void apiStatic__Fs__pathSep__getter(WrenVM *vm) {
+    const char *pathSep =
+    #ifdef _WIN32
+    "\\"
+    #else
+    "/"
+    #endif
+    ;
+    wrenSetSlotString(vm, 0, pathSep);
+}
+
+void apiStatic__Fs__canonical__1(WrenVM *vm) {
+    char *path = realpath(wrenGetSlotString(vm, 1), NULL);
+    if (path != NULL) {
+        wrenSetSlotString(vm, 0, path);
+        free(path);
+    } else {
+        if (errno == ENOENT) {
+            wrenSetSlotNull(vm, 0);
+        } else {
+            abortErrno(vm, errno);
+        }
+    }
+}
+
+void apiStatic__Fs__listDir__1(WrenVM *vm) {
+    DIR *dir;
+    struct dirent *entry;
+    dir = opendir(wrenGetSlotString(vm, 1));
+    if (dir) {
+        errno = 0;
+        wrenSetSlotNewList(vm, 0);
+        while (entry = readdir(dir)) {
+            if (strcmp(entry->d_name, ".") && strcmp(entry->d_name, "..")) {
+
+                wrenSetSlotString(vm, 1, entry->d_name);
+                wrenInsertInList(vm, 0, -1, 1);
+            }
+        }
+        if (errno) {
+            abortErrno(vm, errno);
+        }
+        closedir(dir);
+    } else {
+        abortErrno(vm, errno);
+    }
+}
+
+void apiStatic__Fs__fileSize__1(WrenVM *vm) {
+    struct stat st;
+    if (stat(wrenGetSlotString(vm, 1), &st) >= 0) {
+        wrenSetSlotDouble(vm, 0, (double)(st.st_size));
+    } else {
+        abortErrno(vm, errno);
+    }
+}
+
+void apiStatic__Fs__readLink__1(WrenVM *vm) {
+    size_t buf_cap = 256;
+    char *buf = malloc(buf_cap);
+    errno = 0;
+    const char *path = wrenGetSlotString(vm, 1);
+    while (readlink(path, buf, buf_cap) == buf_cap) {
+        buf_cap <<= 1;
+        buf = realloc(buf, buf_cap);
+    }
+    if (errno) {
+        abortErrno(vm, errno);
+    } else {
+        wrenSetSlotString(vm, 0, buf);
+    }
+    free(buf);
+}
+
+void apiStatic__Fs__exists__1(WrenVM *vm) {
+    struct stat st;
+    if (stat(wrenGetSlotString(vm, 1), &st) >= 0) {
+        wrenSetSlotBool(vm, 0, true);
+    } else {
+        if (errno == ENOENT) {
+            wrenSetSlotBool(vm, 0, false);
+        } else {
+            abortErrno(vm, errno);
+        }
+    }
+}
+
+void apiStatic__Fs__isFile__1(WrenVM *vm) {
+    struct stat st;
+    if (stat(wrenGetSlotString(vm, 1), &st) >= 0) {
+        wrenSetSlotBool(vm, 0, st.st_mode & S_IFREG);
+    } else {
+        if (errno == ENOENT) {
+            wrenSetSlotBool(vm, 0, false);
+        } else {
+            abortErrno(vm, errno);
+        }
+    }
+}
+
+void apiStatic__Fs__isDir__1(WrenVM *vm) {
+    struct stat st;
+    if (stat(wrenGetSlotString(vm, 1), &st) >= 0) {
+        wrenSetSlotBool(vm, 0, st.st_mode & S_IFDIR);
+    } else {
+        if (errno == ENOENT) {
+            wrenSetSlotBool(vm, 0, false);
+        } else {
+            abortErrno(vm, errno);
+        }
+    }
+}
+
+void apiStatic__Fs__isLink__1(WrenVM *vm) {
+    struct stat st;
+    if (lstat(wrenGetSlotString(vm, 1), &st) >= 0) {
+        wrenSetSlotBool(vm, 0, st.st_mode & S_IFLNK);
+    } else {
+        if (errno == ENOENT) {
+            wrenSetSlotBool(vm, 0, false);
+        } else {
+            abortErrno(vm, errno);
+        }
+    }
+}
+
 void apiInit__stdlib(void) {
     CModule *gg_stdlib = register_cmodule("gg_stdlib");
 
@@ -278,4 +561,23 @@ void apiInit__stdlib(void) {
 
     register_method(gg_stdlib, "Process", "static arguments",
             &apiStatic__Process__arguments__getter);
+
+    register_class(gg_stdlib, "File", &apiAllocate__File, &apiFinalize__File);
+    register_method(gg_stdlib, "File", "size", &api__File__size__getter);
+    register_method(gg_stdlib, "File", "read(_)", &api__File__read__1);
+    register_method(gg_stdlib, "File", "seek(_)", &api__File__seek__1);
+    register_method(gg_stdlib, "File", "tell()", &api__File__tell__0);
+    register_method(gg_stdlib, "File", "write(_)", &api__File__write__1);
+    register_method(gg_stdlib, "File", "close()", &api__File__close__0);
+    //register_method(gg_stdlib, "File", "blocking", &api__File__blocking__getter);
+    //register_method(gg_stdlib, "File", "blocking=(_)", &api__File__blocking__setter__1);
+    register_method(gg_stdlib, "Fs", "static pathSep", &apiStatic__Fs__pathSep__getter);
+    register_method(gg_stdlib, "Fs", "static canonical(_)", &apiStatic__Fs__canonical__1);
+    register_method(gg_stdlib, "Fs", "static listDir(_)", &apiStatic__Fs__listDir__1);
+    register_method(gg_stdlib, "Fs", "static fileSize(_)", &apiStatic__Fs__fileSize__1);
+    register_method(gg_stdlib, "Fs", "static readLink(_)", &apiStatic__Fs__readLink__1);
+    register_method(gg_stdlib, "Fs", "static exists(_)", &apiStatic__Fs__exists__1);
+    register_method(gg_stdlib, "Fs", "static isFile(_)", &apiStatic__Fs__isFile__1);
+    register_method(gg_stdlib, "Fs", "static isDir(_)", &apiStatic__Fs__isDir__1);
+    register_method(gg_stdlib, "Fs", "static isLink(_)", &apiStatic__Fs__isLink__1);
 }
