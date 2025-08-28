@@ -12,14 +12,141 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include <wren.h>
+#include "ggwren.h"
+
+// Structs
+typedef struct Buffer Buffer;
+struct Buffer {
+    uint8_t *bytes;
+    size_t count;
+    size_t capacity;
+};
+void write_buffer(Buffer *buffer, const uint8_t *bytes, size_t count);
+void write_string_to_buffer(Buffer *buffer, const char *string);
+void finish_buffer(Buffer *buffer);
+
+// Globals
+size_t search_dir_count = 0;
+size_t search_dir_capacity = 0;
+char **search_dirs = NULL;
+MethodEntry *methods = NULL;
+ClassEntry *classes = NULL;
+int reported_compile_error_count = 0;
+int hidden_compile_error_count = 0;
+
+// Wren configuration functions
+WrenForeignMethodFn wren__bindForeignMethod(
+    WrenVM *vm,
+    const char *module,
+    const char *class,
+    bool isStatic,
+    const char *signature_without_static
+);
+WrenForeignClassMethods wren__bindForeignClass(WrenVM *vm, const char *module, const char *class);
+void wren__write(WrenVM *vm, const char *text);
+void wren__error(WrenVM *vm, WrenErrorType type, const char *module, int line, const char *message);
+void wren__onLoadModuleComplete(WrenVM* vm, const char* name, struct WrenLoadModuleResult result);
+WrenLoadModuleResult wren__loadModule(WrenVM *vm, const char *name);
+
+////////////////////////////////////////////////////////
+
+void link_method_(MethodEntry *entry) {
+    entry->next = methods;
+    methods = entry;
+}
+void link_class_(ClassEntry *entry) {
+    entry->next = classes;
+    classes = entry;
+}
+
+WrenForeignMethodFn wren__bindForeignMethod(
+    WrenVM *vm,
+    const char *module,
+    const char *class,
+    bool isStatic,
+    const char *signature_without_static
+) {
+    // @todo isStatic
+    const char *cmodule = NULL;
+    char *signature = malloc(strlen(signature_without_static) + 12);
+    strcpy(signature, isStatic ? "static " : "");
+    strcat(signature, signature_without_static);
+    WrenForeignMethodFn result = NULL;
+    wrenEnsureSlots(vm, 1);
+    if (wrenHasVariable(vm, module, "CModule_")) {
+        wrenGetVariable(vm, module, "CModule_", 0);
+        if (wrenGetSlotType(vm, 0) == WREN_TYPE_STRING) {
+            cmodule = wrenGetSlotString(vm, 0);
+        } else {
+            fprintf(stderr, "Module `%s` defines `CModule_` as an invalid type.\n", module);
+            exit(2);
+        }
+    } else {
+        fprintf(stderr, "Module `%s` declares foreign class `%s`, but\n", module, class);
+        fprintf(stderr, "does not define a `CModule_`.\n");
+        exit(2);
+    }
+    for (MethodEntry *entry = methods; entry; entry = entry->next) {
+        if (
+            (strcmp(cmodule, entry->cmodule) == 0) &&
+            (strcmp(class, entry->class) == 0) &&
+            (strcmp(signature, entry->signature) == 0)
+        ) {
+            result = entry->method;
+            break;
+        }
+    }
+
+    if (!result) {
+        fprintf(stderr, "Module %s defines class %s with foreign method `%s`,\n",
+                module, class, signature);
+        fprintf(stderr, "but it is not implemented in C.\n");
+        exit(2);
+    }
+    free(signature);
+    return result;
+}
+
+WrenForeignClassMethods wren__bindForeignClass(
+    WrenVM *vm,
+    const char *module,
+    const char *class
+) {
+    const char *cmodule = NULL;
+    wrenEnsureSlots(vm, 1);
+    if (wrenHasVariable(vm, module, "CModule_")) {
+        wrenGetVariable(vm, module, "CModule_", 0);
+        if (wrenGetSlotType(vm, 0) == WREN_TYPE_STRING) {
+            cmodule = wrenGetSlotString(vm, 0);
+        } else {
+            fprintf(stderr, "Module `%s` defines `CModule_` as an invalid type.\n", module);
+            exit(2);
+        }
+    } else {
+        fprintf(stderr, "Module `%s` declares foreign class `%s`, but\n", module, class);
+        fprintf(stderr, "does not define a `CModule_`.\n");
+        exit(2);
+    }
+    for (ClassEntry *entry = classes; entry; entry = entry->next) {
+        if (
+            (strcmp(cmodule, entry->cmodule) == 0) &&
+            (strcmp(class, entry->class) == 0)
+        ) {
+            WrenForeignClassMethods result = {0};
+            result.allocate = entry->allocate;
+            result.finalize = entry->finalize;
+            return result;
+        }
+    }
+    fprintf(stderr, "Module `%s` declares foreign class `%s`, but\n", module, class);
+    fprintf(stderr, "it is not defined by cmodule `%s`.\n", cmodule);
+    exit(2);
+}
 
 void wren__write(WrenVM *vm, const char *text) {
     printf("%s", text);
 }
 
-int compile_error_count = 0;
-int hidden_compile_error_count = 0;
 void wren__error(
     WrenVM *vm,
     WrenErrorType type,
@@ -29,9 +156,9 @@ void wren__error(
 ) {
     switch (type) {
         case WREN_ERROR_COMPILE: {
-            compile_error_count ++;
-            if (compile_error_count < 4) {
+            if (reported_compile_error_count < 3) {
                 fprintf(stderr, "[%s on line %d] %s\n", module, line, message);
+                reported_compile_error_count ++;
             } else {
                 hidden_compile_error_count ++;
             }
@@ -42,6 +169,39 @@ void wren__error(
         case WREN_ERROR_RUNTIME: {
             fprintf(stderr, "[Error] %s\n", message);
         } break;
+    }
+}
+
+WrenLoadModuleResult wren__loadModule(WrenVM *vm, const char *name) {
+    Buffer path = {0};
+    char *source = NULL;
+    for (size_t search_index = 0; !source && (search_index < search_dir_count); search_index ++) {
+        path.count = 0;
+        write_string_to_buffer(&path, search_dirs[search_index]);
+        write_string_to_buffer(&path, "/");
+        size_t name_start = path.count;
+        write_string_to_buffer(&path, name);
+        for (size_t i = name_start; i < path.count; i ++) {
+            if (path.bytes[i] == ':') {
+                path.bytes[i] = '/';
+            }
+        }
+        write_string_to_buffer(&path, ".wren");
+        uint8_t nul = 0;
+        write_buffer(&path, &nul, 1);
+        source = readEntireFile((const char *)(path.bytes));
+    }
+    finish_buffer(&path);
+    WrenLoadModuleResult result;
+    result.source = source;
+    result.onComplete = &wren__onLoadModuleComplete;
+    return result;
+}
+
+
+void wren__onLoadModuleComplete(WrenVM* vm, const char* name, struct WrenLoadModuleResult result) {
+    if (result.source) {
+        free((void*)result.source);
     }
 }
 
@@ -76,15 +236,18 @@ char *readEntireFile(const char *path) {
     return ok ? buffer : NULL;
 }
 
-void wren__onLoadModuleComplete(WrenVM* vm, const char* name, struct WrenLoadModuleResult result) {
-    if (result.source) {
-        free((void*)result.source);
-    }
+size_t nextPowerOfTwo(size_t x) {
+    if (x == 0) return 1;
+    x --;
+    x |= x >> 1;
+    x |= x >> 2;
+    x |= x >> 4;
+    x |= x >> 8;
+    x |= x >> 16;
+    x |= x >> 32;
+    x += 1;
+    return x;
 }
-
-size_t search_dir_count = 0;
-size_t search_dir_capacity = 0;
-char **search_dirs = NULL;
 
 char *dup_string(const char *string) {
     char *result = malloc(strlen(string) + 1);
@@ -101,12 +264,6 @@ void push_search_dir(const char *path) {
     search_dir_count ++;
 }
 
-typedef struct Buffer Buffer;
-struct Buffer {
-    uint8_t *bytes;
-    size_t count;
-    size_t capacity;
-};
 void write_buffer(Buffer *buffer, const uint8_t *bytes, size_t count) {
     bool need_resize = false;
     while ((buffer->count + count) > buffer->capacity) {
@@ -128,32 +285,6 @@ void finish_buffer(Buffer *buffer) {
     if (buffer->bytes) free(buffer->bytes);
 }
 
-WrenLoadModuleResult wren__loadModule(WrenVM *vm, const char *name) {
-    Buffer path = {0};
-    char *source = NULL;
-    for (size_t search_index = 0; !source && (search_index < search_dir_count); search_index ++) {
-        path.count = 0;
-        write_string_to_buffer(&path, search_dirs[search_index]);
-        write_string_to_buffer(&path, "/");
-        size_t name_start = path.count;
-        write_string_to_buffer(&path, name);
-        for (size_t i = name_start; i < path.count; i ++) {
-            if (path.bytes[i] == ':') {
-                path.bytes[i] = '/';
-            }
-        }
-        write_string_to_buffer(&path, ".wren");
-        uint8_t nul = 0;
-        write_buffer(&path, &nul, 1);
-        source = readEntireFile((const char *)(path.bytes));
-    }
-    finish_buffer(&path);
-    WrenLoadModuleResult result;
-    result.source = source;
-    result.onComplete = &wren__onLoadModuleComplete;
-    return result;
-}
-
 int main(int argc, char **argv) {
     WrenConfiguration config;
 
@@ -161,6 +292,10 @@ int main(int argc, char **argv) {
     config.writeFn = &wren__write;
     config.errorFn = &wren__error;
     config.loadModuleFn = &wren__loadModule;
+    config.bindForeignMethodFn = &wren__bindForeignMethod;
+    config.bindForeignClassFn = &wren__bindForeignClass;
+
+    loadCModules();
 
     const char *path = NULL;
     char *script = NULL;
@@ -258,6 +393,8 @@ int main(int argc, char **argv) {
         if (search_dirs[i]) free(search_dirs[i]);
     }
     if (search_dirs) free(search_dirs);
+
+    printf("Execution complete.\n");
 
     return ok ? 0 : 1;
 }
