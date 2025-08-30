@@ -1,5 +1,7 @@
 import "lib/buffer" for Buffer
 
+var Hex = "0123456789abcdef"
+
 class Stream {
     construct new(data) {
         _data = data
@@ -65,9 +67,70 @@ class JSON {
 
     static encodeValue_(data, stream) {
         if (data is Num) {
-            stream.write(data.toString)
+            if (data.isNan) {
+                stream.write("null")
+            } else if (data.isInfinity) {
+                if (Num < 0) {
+                    stream.write("-")
+                }
+                stream.write("1e9999")
+            } else {
+                stream.write(data.toString)
+            }
         } else if (data is String) {
-            // @todo
+            stream.write("\"")
+            for (char in data.codePoints) {
+                if (char == -1) {
+                    stream.write("?")
+                } else if (char == 34) {
+                    stream.write("\\\"")
+                } else if (char == 92) {
+                    stream.write("\\\\")
+                } else if ((char < 32) || (char > 126)) {
+                    if (char < 0xFFFF) {
+                        stream.write("\\u")
+                        stream.write(Hex[(char >> 12) & 0xF])
+                        stream.write(Hex[(char >>  8) & 0xF])
+                        stream.write(Hex[(char >>  4) & 0xF])
+                        stream.write(Hex[ char        & 0xF])
+                    } else {
+                        stream.write(String.fromCodePoint(char))
+                    }
+                } else {
+                    stream.writeByte(char)
+                }
+            }
+            stream.write("\"")
+        } else if (data is List) {
+            stream.write("[")
+            var first = true
+            for (elem in data) {
+                if (!first) stream.write(",")
+                first = false
+                encodeValue_(elem, stream)
+            }
+            stream.write("]")
+        } else if (data is Map) {
+            stream.write("{")
+            var first = true
+            for (entry in data) {
+                if (!first) stream.write(",")
+                first = false
+                encodeValue_(entry.key.toString, stream)
+                stream.write(":")
+                encodeValue_(entry.value, stream)
+            }
+            stream.write("}")
+        } else if (data is Bool) {
+            if (data) {
+                stream.write("true")
+            } else {
+                stream.write("false")
+            }
+        } else if (data == null) {
+            stream.write("null")
+        } else {
+            stream.write(data.toJSON)
         }
     }
 
