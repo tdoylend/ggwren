@@ -5,9 +5,10 @@ if (Fiber.new{
 }
 
 import "gg" for GG
-import "lib:io:fs" for Fs
-import "lib:os" for Process
-import "lib:string" for StringUtil as S, BytewiseLexicalOrdering
+import "lib/io/fs" for Fs
+import "lib/os" for Process
+import "lib/string" for StringUtil as S, BytewiseLexicalOrdering
+import "lib/time" for Time
 import "meta" for Meta
 
 var Try = true
@@ -38,10 +39,15 @@ class Test {
         System.write("    " + S.left(test+" ", 50, ".")+"... ")
     }
 
-    static pass() {
-        System.print("\x1b[32;1mpassed\x1b[m")
+    static pass() { pass(0) }
+
+    static pass(t) {
+        var timeInfo = (t > 1.0) ? " (%(t) seconds)" : ""
+        System.print("\x1b[32;1mpassed\x1b[m%(timeInfo)")
         __passedTotal = __passedTotal + 1
     }
+
+    static fail(t) { fail() }
 
     static fail() {
         System.print("\x1b[31;1mfailed\x1b[m")
@@ -53,17 +59,19 @@ class Test {
         var result = null
         var error = null
         var fiber = Fiber.new{ result = fn.call() }
+        var startTime = Time.now
         if (Try) {
             error = fiber.try()
         } else {
             error = fiber.call()
         }
+        var endTime = Time.now
         if (error is String) {
-            fail()
+            fail(endTime - startTime)
         } else if (!result) {
-            fail()
+            fail(endTime - startTime)
         } else {
-            pass()
+            pass(endTime - startTime)
         }
     }
 
@@ -78,9 +86,9 @@ class Test {
             error = fiber.call()
         }
         if (error is String) {
-            pass()
+            pass(endTime - startTime)
         } else {
-            fail()
+            fail(endTime - startTime)
         }
     }
 }
@@ -95,7 +103,7 @@ for (filename in TestDirContents) {
     if (filename.endsWith(".wren")) {
         var testName = filename.split(".")[0]
         System.print(testName)
-        Meta.eval("import \"tests:%(testName)\"")
+        Meta.eval("import \"tests/%(testName)\"")
     }
 }
 

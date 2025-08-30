@@ -1,4 +1,4 @@
-import "lib:buffer" for ByteBuffer
+import "lib/buffer" for Buffer
 
 class Stream {
     construct new(data) {
@@ -46,6 +46,31 @@ class Stream {
 }
 
 class JSON {
+    static decode(string) {
+        var stream = Stream.new(string)
+        var result = decodeValue_(stream)
+        if (stream.peek() != null) Fiber.abort(stream.traceback + "Trailing data after JSON value.")
+        return result
+    }
+
+    static encode(data) {
+        var buffer = Buffer.new()
+        encodeValue_(data, buffer)
+        return buffer.read()
+    }
+    
+    static encodeInto(data, stream) {
+        encodeValue_(data, stream)
+    }
+
+    static encodeValue_(data, stream) {
+        if (data is Num) {
+            stream.write(data.toString)
+        } else if (data is String) {
+            // @todo
+        }
+    }
+
     static decodeWhitespace_(stream) {
         while (stream.peek() && " \r\n\t".contains(stream.peek())) stream.next()
     }
@@ -87,7 +112,7 @@ class JSON {
 
     static decodeString_(stream) {
         stream.expect("\"")
-        var buffer = ByteBuffer.new()
+        var buffer = Buffer.new()
         while (!stream.match("\"")) {
             if (stream.peek() == null) {
                 Fiber.abort(stream.traceback + "This JSON string is not properly terminated.")
@@ -106,7 +131,7 @@ class JSON {
     }
 
     static decodeNumber_(stream) {
-        var buffer = ByteBuffer.new()
+        var buffer = Buffer.new()
         if (stream.match("-")) buffer.write("-")
         if (stream.match("0")) {
             buffer.write("0")
@@ -241,13 +266,6 @@ class JSON {
             Fiber.abort(stream.traceback + "Invalid character in JSON value: `%(stream.peek())`.")
         }
         decodeWhitespace_(stream)
-        return result
-    }
-    
-    static decode(string) {
-        var stream = Stream.new(string)
-        var result = decodeValue_(stream)
-        if (stream.peek() != null) Fiber.abort(stream.traceback + "Trailing data after JSON value.")
         return result
     }
 }

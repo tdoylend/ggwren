@@ -2,336 +2,245 @@
 // Copyright 2025 Thomas Doylend. All rights reserved.
 // For licensing information, please view the LICENSE.txt file.
 
-#include <limits.h>
+#include <stdarg.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
+// Platform-specific includes
+#ifdef __linux__
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <libgen.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#elif _WIN32
+#error
+#endif
 
-#include "ggwren.h"
+#include <wren.h>
+#define wrenGetSlotType_ wrenGetSlotType
+
+#define GG_HOST
+#include <ggwren.h>
+
+#define GG_VERSION "0.0.1-indev"
+
+#define MAX_MODULE_SEARCH_PATHS             64
+#define MAX_COMPILATION_ERRORS_SHOWN         3
+#define WARNING "\x1b[33;1m[WARNING]\x1b[m "
+#define ERROR   "\x1b[31;1m[ERROR]\x1b[m "
+#define TRACE   "\x1b[36m[TRACE]\x1b[m "
+#define NOTE    "\x1b[36m[NOTE]\x1b[m "
+#define HELP                                                                                       \
+"Usage:"                                                                         "\n"              \
+""                                                                               "\n"              \
+"    %s [<options>] [<script>]"                                                  "\n"              \
+""                                                                               "\n"              \
+"Options:"                                                                       "\n"              \
+""                                                                               "\n"              \
+"    -list-lib-paths      List the paths GGWren will search for modules."        "\n"              \
+""                                                                               "\n"              \
+"    -lib=<path>          Add a module search path."                             "\n"              \
+""                                                                               "\n"              
+
+#define GG_SOURCE                                                                                  \
+"class GG {"                                                                     "\n"              \
+"    foreign static ggVersion"                                                   "\n"              \
+"    foreign static wrenVersion"                                                 "\n"              \
+"    foreign static bind(extension)"                                             "\n"              \
+"    foreign static scriptDir"                                                   "\n"              \
+"    foreign static scriptPath"                                                  "\n"              \
+"}"                                                                              "\n"              \
+
+#define EXITCODE_OK /*..............................*/  0
+#define EXITCODE_RUNTIME_ERROR /*...................*/  1
+#define EXITCODE_COMPILATION_ERROR /*...............*/  2
+#define EXITCODE_COULD_NOT_LOAD_EXTENSION /*........*/  3
+#define EXITCODE_COULD_NOT_BIND_FOREIGN_CLASS /*....*/  4
+#define EXITCODE_COULD_NOT_BIND_FOREIGN_METHOD /*...*/  5
+#define EXITCODE_INVALID_COMMAND_LINE_ARGS /*.......*/ 10
+#define EXITCODE_COULD_NOT_READ_SCRIPT_SOURCE /*....*/ 11
+#define EXITCODE_FATAL_ERROR /*.....................*/ 31
 
 // Structs
+typedef struct ExtClass ExtClass;
+struct ExtClass {
+    const char *name;
+    WrenForeignMethodFn allocate;
+    WrenFinalizerFn finalize;
+    ExtClass *next;
+};
+
+typedef struct ExtMethod ExtMethod;
+struct ExtMethod {
+    const char *class;
+    const char *signature;
+    WrenForeignMethodFn fn;
+    ExtMethod *next;
+};
+
+typedef void* ExtHandle;
+ExtHandle openExt(const char *name);
+void closeExt(ExtHandle handle);
+void* getExtFn(ExtHandle handle, const char *name);
+
+typedef struct Ext Ext;
+struct Ext {
+    char *name;
+    ExtHandle handle;
+    ExtClass *classes;
+    ExtMethod *methods;
+    Ext *next;
+};
+
+#include "gg.h"
+
 typedef struct Buffer Buffer;
 struct Buffer {
     uint8_t *bytes;
     size_t count;
-    size_t capacity;
+    size_t capacity_including_nul;
 };
-void write_buffer(Buffer *buffer, const uint8_t *bytes, size_t count);
-void write_string_to_buffer(Buffer *buffer, const char *string);
-void finish_buffer(Buffer *buffer);
+void pushBuffer(Buffer *buffer, const char *string);
+void pushBytesToBuffer(Buffer *buffer, const uint8_t *bytes, size_t length);
+void printfBuffer(Buffer *buffer, const char *format, ...);
+void finishBuffer(Buffer *buffer);
 
-typedef struct ForeignMethod ForeignMethod;
-struct ForeignMethod {
-    const char *class;
-    const char *signature;
-    WrenForeignMethodFn fn;
-    ForeignMethod *next;
-};
-
-typedef struct ForeignClass ForeignClass;
-struct ForeignClass {
-    const char *name;
-    WrenForeignMethodFn allocate;
-    WrenFinalizerFn finalize;
-    ForeignClass *next;
-};
-
-struct CModule {
-    const char *name;
-    ForeignMethod *foreignMethods;
-    ForeignClass *foreignClasses;
-    CModule *next;
-};
+char* readEntireFile(const char* path, size_t* length);
+char* asprintf(const char* format, ...);
+static inline char *dupString(const char *string);
+size_t nextPowerOfTwo(size_t x);
+void addModuleSearchPath(const char *path);
 
 // Globals
-char **global_argv;
-int    global_argc;
-size_t search_dir_count = 0;
-size_t search_dir_capacity = 0;
-char **search_dirs = NULL;
-int reported_compile_error_count = 0;
-int hidden_compile_error_count = 0;
-CModule *cmodules = NULL;
-CModule *bound_cmodule = NULL;
-char *scriptDir = NULL;
-char *scriptPath = NULL;
+char **argv;
+int argc;
+char **scriptArgv;
+int scriptArgc;
+char* binPath = NULL;
+char* binDir  = NULL;
+char* scriptPath = NULL;
+char* scriptDir = NULL;
+char* scriptSource = NULL;
+char* scriptModuleName = NULL;
+int scriptExitCode = EXITCODE_OK;
+const char *extError = NULL;
+char* moduleSearchPaths[MAX_MODULE_SEARCH_PATHS];
+int moduleSearchPathCount = 0;
+bool tooManyModuleSearchPaths = false;
+Ext* extensions = NULL;
+Ext* extBeingInitialized = NULL;
+Ext* boundExtension = NULL;
+WrenConfiguration config = {0};
+WrenVM* vm = NULL;
+int compilationErrorsShown = 0;
+int compilationErrorsHidden = 0;
+Buffer foreignMethodSignature = {0};
+Buffer modulePath = {0};
 
-const char *GG_SOURCE = 
-    "class GG {\n"
-    "foreign static version\n"
-    "foreign static cmodules\n"
-    "foreign static bind(cmodule)\n"
-    "foreign static scriptDir\n"
-    "foreign static scriptPath\n"
-    "}\n"
-;
+GG_ABI abi = {
+    #define GG_ABI_ENTRY(returnType, name, signature, params) .name = &name,
+    GG_ABI_ENTRIES(GG_ABI_ENTRY)
+    #undef GG_ABI_ENTRY
+};
 
-// Wren configuration functions
-WrenForeignMethodFn wren__bindForeignMethod(
-    WrenVM *vm,
-    const char *module,
-    const char *class,
-    bool isStatic,
-    const char *raw_signature
-);
-WrenForeignClassMethods wren__bindForeignClass(WrenVM *vm, const char *module, const char *class);
-void wren__write(WrenVM *vm, const char *text);
-void wren__error(WrenVM *vm, WrenErrorType type, const char *module, int line, const char *message);
-void wren__onLoadModuleComplete(WrenVM* vm, const char* name, struct WrenLoadModuleResult result);
-WrenLoadModuleResult wren__loadModule(WrenVM *vm, const char *name);
-
-////////////////////////////////////////////////////////
-
-CModule *register_cmodule(
-    const char *name
-) {
-    CModule *module = malloc(sizeof(CModule));
-    module->name = name;
-    module->foreignMethods = NULL;
-    module->foreignClasses = NULL;
-    module->next = cmodules;
-    cmodules = module;
-    return module;
+// Function implementations
+ExtHandle openExt(const char *name) {
+    char* extPath = asprintf("%s/bin/%s.ggwren.so", binDir, name);
+    ExtHandle handle = dlopen(extPath, RTLD_NOW | RTLD_LOCAL);
+    free(extPath);
+    if (!handle) extError = dlerror();
+    return handle;
 }
 
-void register_method(
-    CModule *cmodule,
-    const char *class,
-    const char *signature,
-    WrenForeignMethodFn fn
-) {
-    ForeignMethod *method = malloc(sizeof(ForeignMethod));
-    method->class = class;
-    method->signature = signature;
-    method->fn = fn;
-    method->next = cmodule->foreignMethods;
-    cmodule->foreignMethods = method;
+void closeExt(ExtHandle handle) {
+    (void)dlclose(handle);
 }
 
-void register_class(
-    CModule *cmodule,
-    const char *name,
-    WrenForeignMethodFn allocate,
-    WrenFinalizerFn finalize
-) {
-    ForeignClass *class = malloc(sizeof(ForeignClass));
-    class->name = name;
-    class->allocate = allocate;
-    class->finalize = finalize;
-    class->next = cmodule->foreignClasses;
-    cmodule->foreignClasses = class;
+void* getExtFn(ExtHandle handle, const char *name) {
+    void* sym = dlsym(handle, name);
+    if (!sym) extError = dlerror();
+    return sym;
 }
 
-static void apiStatic__GG__cmodules__getter(WrenVM *vm) {
-    wrenEnsureSlots(vm, 2);
-    wrenSetSlotNewList(vm, 0);
-    for (CModule *module = cmodules; module; module = module->next) {
-        wrenSetSlotString(vm, 1, module->name);
-        wrenInsertInList(vm, 0, -1, 1);
-    }
-}
-
-static void apiStatic__GG__version__getter(WrenVM *vm) {
-    wrenSetSlotString(vm, 0, GG_VERSION);
-}
-
-static void apiStatic__GG__bind__1(WrenVM *vm) {
-    if (wrenGetSlotType(vm, 1) == WREN_TYPE_NULL) {
-        bound_cmodule = NULL;
+void ggRegisterClass(const char *name, WrenForeignMethodFn allocate, WrenFinalizerFn finalize) {
+    if (extBeingInitialized) {
+        ExtClass* class = malloc(sizeof(ExtClass));
+        class->name = name;
+        class->allocate = allocate;
+        class->finalize = finalize;
+        class->next = extBeingInitialized->classes;
+        extBeingInitialized->classes = class;
     } else {
-        const char *name = wrenGetSlotString(vm, 1);
-        bool found = false;
-        for (bound_cmodule = cmodules; bound_cmodule; bound_cmodule = bound_cmodule->next) {
-            if (strcmp(bound_cmodule->name, name) == 0) {
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            Buffer temp = {0};
-            write_string_to_buffer(&temp, "Your build of GGWren does not contain the cmodule `");
-            write_string_to_buffer(&temp, name);
-            write_string_to_buffer(&temp, "`.");
-            wrenSetSlotBytes(vm, 0, temp.bytes, temp.count);
-            wrenAbortFiber(vm, 0);
-            finish_buffer(&temp);
-        }
+        fprintf(stderr, WARNING "ggRegisterClass(..) was invoked by an extension outside "
+                "ggExt_init(..), which has no effect.\n");
     }
 }
 
-void apiStatic__GG__scriptDir__getter(WrenVM *vm) {
-    wrenSetSlotString(vm, 0, scriptDir);
-}
-
-void apiStatic__GG__scriptPath__getter(WrenVM *vm) {
-    wrenSetSlotString(vm, 0, scriptPath);
-}
-
-WrenForeignMethodFn wren__bindForeignMethod(
-    WrenVM *vm,
-    const char *module,
-    const char *class,
-    bool isStatic,
-    const char *signature_without_static
-) {
-    WrenForeignMethodFn result = NULL;
-    bool found = false;
-    char *signature = malloc(strlen(signature_without_static) + 12);
-    strcpy(signature, isStatic ? "static " : "");
-    strcat(signature, signature_without_static);
-    if (strcmp(module, "gg") == 0) {
-        if (strcmp(class, "GG") == 0) {
-            if (strcmp(signature, "static bind(_)") == 0) result = &apiStatic__GG__bind__1;
-            if (strcmp(signature, "static version") == 0) result = &apiStatic__GG__version__getter;
-            if (strcmp(signature, "static cmodules")== 0) result = &apiStatic__GG__cmodules__getter;
-            if (strcmp(signature, "static scriptDir")== 0)
-                    result = &apiStatic__GG__scriptDir__getter;
-            if (strcmp(signature, "static scriptPath")== 0)
-                    result = &apiStatic__GG__scriptPath__getter;
-        }
-    }
-    if (result) found = true;
-    if (strcmp(module, "meta") == 0) {
-        if (strcmp(class, "Meta") == 0) {
-            found = true;
-        }
-    }
-    if (!found && !bound_cmodule) {
-        fprintf(stderr, "Module `%s` declares foreign methods but did not call GG.bind(..).\n",
-                module);
-        exit(2);
-    }
-    if (!found) {
-        for (
-            ForeignMethod *entry = bound_cmodule->foreignMethods;
-            !result && entry;
-            entry = entry->next
-        ) {
-            if (
-                (strcmp(class, entry->class) == 0) &&
-                (strcmp(signature, entry->signature) == 0)
-            ) {
-                result = entry->fn;
-            }
-        }
-    }
-    if (result) found = true;
-    if (!found) {
-        fprintf(stderr, "Module %s defines class %s with foreign method `%s`,\n",
-                module, class, signature);
-        fprintf(stderr, "but it is not implemented in the bound cmodule `%s`.\n",
-                bound_cmodule->name);
-        exit(2);
-    }
-    free(signature);
-    return result;
-}
-
-WrenForeignClassMethods wren__bindForeignClass(
-    WrenVM *vm,
-    const char *module,
-    const char *class
-) {
-    if (!bound_cmodule) {
-        fprintf(stderr, "Module `%s` declares foreign classes but did not call GG.bind(..).\n",
-                module);
-        exit(2);
-    }
-    for (ForeignClass *entry = bound_cmodule->foreignClasses; entry; entry = entry->next) {
-        if (strcmp(class, entry->name) == 0) {
-            WrenForeignClassMethods result = {0};
-            result.allocate = entry->allocate;
-            result.finalize = entry->finalize;
-            return result;
-        }
-    }
-    fprintf(stderr, "Module `%s` declares foreign class `%s`, but\n", module, class);
-    fprintf(stderr, "it is not implemented by the bound cmodule `%s`.\n", bound_cmodule->name);
-    exit(2);
-}
-
-void wren__write(WrenVM *vm, const char *text) {
-    printf("%s", text);
-}
-
-void wren__error(
-    WrenVM *vm,
-    WrenErrorType type,
-    const char *module,
-    int line,
-    const char *message
-) {
-    if (type != WREN_ERROR_COMPILE) {
-        if (hidden_compile_error_count > 0) {
-            fprintf(stderr, "(+%d more error%s)\n", hidden_compile_error_count,
-                    hidden_compile_error_count != 1 ? "s" : "");
-        }
-        hidden_compile_error_count = 0;
-    }
-
-    switch (type) {
-        case WREN_ERROR_COMPILE: {
-            if (reported_compile_error_count < 3) {
-                fprintf(stderr, "[%s on line %d] %s\n", module, line, message);
-                reported_compile_error_count ++;
-            } else {
-                hidden_compile_error_count ++;
-            }
-        } break;
-        case WREN_ERROR_STACK_TRACE: {
-            fprintf(stderr, "[%s on line %d] in %s\n", module, line, message);
-        } break;
-        case WREN_ERROR_RUNTIME: {
-            fprintf(stderr, "[Error] %s\n", message);
-        } break;
-    }
-}
-
-WrenLoadModuleResult wren__loadModule(WrenVM *vm, const char *name) {
-    WrenLoadModuleResult result;
-    if (strcmp(name, "gg") == 0) {
-        result.source = GG_SOURCE;
-        result.onComplete = NULL;
+void ggRegisterMethod(const char *className, const char *signature, WrenForeignMethodFn fn) {
+    if (extBeingInitialized) {
+        ExtMethod* method = malloc(sizeof(ExtMethod));
+        method->class = className;
+        method->signature = signature;
+        method->fn = fn;
+        method->next = extBeingInitialized->methods;
+        extBeingInitialized->methods = method;
     } else {
-        Buffer path = {0};
-        char *source = NULL;
-        for (size_t search_index = 0; !source && (search_index < search_dir_count); search_index ++) {
-            path.count = 0;
-            write_string_to_buffer(&path, search_dirs[search_index]);
-            write_string_to_buffer(&path, "/");
-            size_t name_start = path.count;
-            write_string_to_buffer(&path, name);
-            for (size_t i = name_start; i < path.count; i ++) {
-                if (path.bytes[i] == ':') {
-                    path.bytes[i] = '/';
-                }
-            }
-            write_string_to_buffer(&path, ".wren");
-            uint8_t nul = 0;
-            write_buffer(&path, &nul, 1);
-            source = readEntireFile((const char *)(path.bytes));
-        }
-        result.source = source;
-        result.onComplete = &wren__onLoadModuleComplete;
-        finish_buffer(&path);
-    }
-    return result;
-}
-
-
-void wren__onLoadModuleComplete(WrenVM* vm, const char* name, struct WrenLoadModuleResult result) {
-    if (result.source) {
-        free((void*)result.source);
+        fprintf(stderr, WARNING "ggRegisterMethod(..) was invoked by an extension outside "
+                "ggExt_init(..), which has no effect.\n");
     }
 }
 
-char *readEntireFile(const char *path) {
+void pushBuffer(Buffer *buffer, const char *string) {
+    size_t length = strlen(string);
+    if ((length + buffer->count + 1) > buffer->capacity_including_nul) {
+        buffer->capacity_including_nul = length + buffer->count + 1;
+        buffer->capacity_including_nul = nextPowerOfTwo(buffer->capacity_including_nul);
+        buffer->bytes = realloc(buffer->bytes, buffer->capacity_including_nul);
+    }
+    memcpy(&buffer->bytes[buffer->count], string, length);
+    buffer->count += length;
+    buffer->bytes[buffer->count] = 0;
+}
+
+void pushBytesToBuffer(Buffer *buffer, const uint8_t *bytes, size_t length) {
+    if ((length + buffer->count + 1) > buffer->capacity_including_nul) {
+        buffer->capacity_including_nul = length + buffer->count + 1;
+        buffer->capacity_including_nul = nextPowerOfTwo(buffer->capacity_including_nul);
+        buffer->bytes = realloc(buffer->bytes, buffer->capacity_including_nul);
+    }
+    memcpy(&buffer->bytes[buffer->count], bytes, length);
+    buffer->count += length;
+    buffer->bytes[buffer->count] = 0;
+}
+
+void printfBuffer(Buffer *buffer, const char *format, ...) {
+    va_list args1;
+    va_list args2;
+    va_start(args1, format);
+    va_copy(args2, args1);
+    char c[2];
+    size_t space_required = vsnprintf(c, 2, format, args1);
+    if ((space_required + 1) > buffer->capacity_including_nul) {
+        buffer->capacity_including_nul = space_required + 1;
+        buffer->capacity_including_nul = nextPowerOfTwo(buffer->capacity_including_nul);
+        buffer->bytes = realloc(buffer->bytes, buffer->capacity_including_nul);
+    }
+    buffer->count = vsnprintf(buffer->bytes, space_required + 1, format, args2);
+    va_end(args2);
+    va_end(args1);
+}
+
+void finishBuffer(Buffer *buffer) {
+    if (buffer->bytes) free(buffer->bytes);
+    memset(buffer, 0, sizeof(Buffer));
+}
+
+char *readEntireFile(const char *path, size_t* size_ptr) {
     int f = open(path, 0);
     bool ok = true;
     if (f < 0) ok = false;
@@ -359,7 +268,29 @@ char *readEntireFile(const char *path) {
         free(buffer);
     }
     if (f >= 0) close(f);
+    if (ok && size_ptr) *size_ptr = size;
     return ok ? buffer : NULL;
+}
+
+char* asprintf(const char *format, ...) {
+    va_list args1;
+    va_list args2;
+    va_start(args1, format);
+    va_copy(args2, args1);
+    char c[2];
+    size_t space_required = vsnprintf(c, 2, format, args1);
+    char* result = malloc(space_required + 1);
+    (void)vsnprintf(result, space_required + 1, format, args2);
+    va_end(args2);
+    va_end(args1);
+    return result;
+}
+
+static inline char* dupString(const char* string) {
+    size_t length = strlen(string);
+    char* result = malloc(length+1);
+    memcpy(result, string, length + 1);
+    return result;
 }
 
 size_t nextPowerOfTwo(size_t x) {
@@ -375,187 +306,443 @@ size_t nextPowerOfTwo(size_t x) {
     return x;
 }
 
-char *dup_string(const char *string) {
-    char *result = malloc(strlen(string) + 1);
-    strcpy(result, string);
+void addModuleSearchPath(const char *path) {
+    if (moduleSearchPathCount < MAX_MODULE_SEARCH_PATHS) {
+        moduleSearchPaths[moduleSearchPathCount] = path ? dupString(path) : NULL;
+        moduleSearchPathCount ++;
+    } else {
+        tooManyModuleSearchPaths = true;
+    }
+}
+
+void apiStatic_GG_ggVersion_getter(WrenVM* vm) {
+    wrenSetSlotString(vm, 0, GG_VERSION);
+}
+
+void apiStatic_GG_wrenVersion_getter(WrenVM* vm) {
+    wrenSetSlotString(vm, 0, WREN_VERSION_STRING);
+}
+
+void apiStatic_GG_bind_1(WrenVM* vm) {
+    WrenType t = wrenGetSlotType(vm, 1);
+    if (t == WREN_TYPE_STRING) {
+        Ext* result = NULL;
+        const char* name = wrenGetSlotString(vm, 1);
+        for (Ext* ext = extensions; !result && ext; ext = ext->next) {
+            if (strcmp(ext->name, name) == 0) {
+                result = ext;
+            }
+        }
+        if (!result) {
+            ExtHandle handle = openExt(name);
+            if (handle) {
+                Ext* ext = malloc(sizeof(Ext));
+                ext->name = dupString(name);
+                ext->handle = handle;
+                ext->classes = NULL;
+                ext->methods = NULL;
+                ext->next = extensions;
+                extensions = ext;
+                ggExt_BootstrapFn extBootstrap = getExtFn(handle, "ggExt_bootstrap");
+                ggExt_InitFn extInit = getExtFn(handle, "ggExt_init");
+                if (extBootstrap) {
+                    if (extBootstrap(&abi) == GG_BOOTSTRAP_OK) {
+                        if (extInit) {
+                            extBeingInitialized = ext;
+                            extInit();
+                            extBeingInitialized = NULL;
+                        }
+                        result = ext;
+                    } else {
+                        extError = "ggExt_bootstrap(..) returned a non-zero error value.\n";
+                    }
+                } else {
+                    extError = "The extension does not have a ggExt_bootstrap function defined,\n"
+                            "which means either it was compiled without ggwren.h or the\n"
+                            "GG_EXT_IMPLEMENTATION macro was not defined. Please contact the\n"
+                            "extension maintainer for a fix.";
+                }
+            }
+            if (!result) {
+                fprintf(stderr, ERROR "Could not load extension `%s`.\n", name);
+                fprintf(stderr, ERROR "%s\n", extError);
+                exit(EXITCODE_COULD_NOT_LOAD_EXTENSION);
+                if (handle) closeExt(handle);
+            }
+        }
+        boundExtension = result;
+    } else if (t == WREN_TYPE_NULL) {
+        boundExtension = NULL;
+    } else {
+        wrenSetSlotString(vm, 0, "The argument to `bind(..)` must be either a String or null.");
+        wrenAbortFiber(vm, 0);
+    }
+}
+
+void apiStatic_GG_scriptPath_getter(WrenVM* vm) {
+    wrenSetSlotString(vm, 0, scriptPath);
+}
+
+void apiStatic_GG_scriptDir_getter(WrenVM* vm) {
+    wrenSetSlotString(vm, 0, scriptDir);
+}
+
+void apiConfig_write(WrenVM* vm, const char* text) {
+    printf("%s", text);
+}
+
+void apiConfig_error(
+    WrenVM* vm,
+    WrenErrorType type,
+    const char* module,
+    int line,
+    const char* message
+) {
+    if ((type != WREN_ERROR_COMPILE) && (compilationErrorsHidden > 0)) {
+        fprintf(stderr, NOTE "(%d additional error%s not shown)\n", compilationErrorsHidden,
+                compilationErrorsHidden != 1 ? "s" : "");
+        compilationErrorsHidden = 0;
+    }
+    switch (type) {
+        case WREN_ERROR_COMPILE: {
+            if (compilationErrorsShown >= MAX_COMPILATION_ERRORS_SHOWN) {
+            } else {
+                fprintf(stderr, ERROR "(In module `%s` on line %d) %s\n", module, line, message);
+                compilationErrorsShown ++;
+            }
+        } break;
+        case WREN_ERROR_STACK_TRACE: {
+            fprintf(stderr, TRACE "In module `%s`, line %d, in `%s`\n", module, line, message);
+        } break;
+        case WREN_ERROR_RUNTIME: {
+            fprintf(stderr, ERROR "%s\n", message);
+        } break;
+    }
+}
+
+WrenForeignClassMethods apiConfig_bindForeignClass(
+    WrenVM *vm,
+    const char* module,
+    const char* name
+) {
+    WrenForeignClassMethods result = {0};
+    if (boundExtension) {
+        for (ExtClass *class=boundExtension->classes; !result.allocate && class;class=class->next) {
+            if (strcmp(class->name, name) == 0) {
+                result.allocate = class->allocate;
+                result.finalize = class->finalize;
+            }
+        }
+        if (!result.allocate) {
+            fprintf(stderr, ERROR "Module `%s` defines foreign class `%s`, but bound "
+                    "extension `%s` does not implement it.\n", module,
+                    name, boundExtension->name);
+            exit(EXITCODE_COULD_NOT_BIND_FOREIGN_CLASS);
+        }
+    } else {
+        fprintf(stderr, ERROR "Module `%s` defines foreign class `%s` without first "
+                "calling GG.bind(..).\n", module, name);
+        exit(EXITCODE_COULD_NOT_BIND_FOREIGN_CLASS);
+    }
+    return result;
+
     return result;
 }
 
-void push_search_dir(const char *path) {
-    if (search_dir_count == search_dir_capacity) {
-        search_dir_capacity = search_dir_capacity ? search_dir_capacity << 1 : 8;
-        search_dirs = realloc(search_dirs, sizeof(char*)*search_dir_capacity);
+WrenForeignMethodFn apiConfig_bindForeignMethod(
+    WrenVM* vm,
+    const char* module,
+    const char* class,
+    bool isStatic,
+    const char* signature
+) {
+    foreignMethodSignature.count = 0;
+    printfBuffer(&foreignMethodSignature, "%s%s", isStatic ? "static " : "", signature);
+    WrenForeignMethodFn result = NULL;
+    if (strcmp(module, "gg") == 0) {
+        if      (strcmp(signature, "ggVersion") == 0)    result = &apiStatic_GG_ggVersion_getter;
+        else if (strcmp(signature, "wrenVersion") == 0)  result = &apiStatic_GG_wrenVersion_getter;
+        else if (strcmp(signature, "bind(_)") == 0)      result = &apiStatic_GG_bind_1;
+        else if (strcmp(signature, "scriptDir") == 0)    result = &apiStatic_GG_scriptDir_getter;
+        else if (strcmp(signature, "scriptPath") == 0)   result = &apiStatic_GG_scriptPath_getter;
+        else {
+            fprintf(stderr, "Internal error: gg declares non-existent method `%s`\n", signature);
+            exit(EXITCODE_FATAL_ERROR);
+        }
+    } else if (strcmp(module, "meta") == 0) {
+        // do nothing
+    } else if (strcmp(module, "random") == 0) {
+        // do nothing
+    } else if (boundExtension) {
+        for (ExtMethod *method = boundExtension->methods; !result && method; method= method->next) {
+            if ((strcmp(method->class, class) == 0) &&
+                (strcmp(method->signature, foreignMethodSignature.bytes) == 0))
+            {
+                result = method->fn;
+            }
+        }
+        if (!result) {
+            fprintf(stderr, ERROR "Module `%s` defines foreign %smethod `%s.%s`, but bound "
+                    "extension `%s` does not implement it.\n", module, isStatic ? "static " : "",
+                    class, signature, boundExtension->name);
+            exit(EXITCODE_COULD_NOT_BIND_FOREIGN_METHOD);
+        }
+    } else {
+        fprintf(stderr, ERROR "Module `%s` defines foreign %smethod `%s.%s` without first "
+                "calling GG.bind(..).\n", module, isStatic ? "static " : "", class, signature);
+        exit(EXITCODE_COULD_NOT_BIND_FOREIGN_METHOD);
     }
-    search_dirs[search_dir_count] = path ? dup_string(path) : NULL;
-    search_dir_count ++;
+
+    return result;
 }
 
-void write_buffer(Buffer *buffer, const uint8_t *bytes, size_t count) {
-    bool need_resize = false;
-    while ((buffer->count + count) > buffer->capacity) {
-        buffer->capacity = buffer->capacity ? buffer->capacity << 1 : 256;
-        need_resize = true;
-    }
-    if (need_resize) {
-        buffer->bytes = realloc(buffer->bytes, buffer->capacity);
-    }
-    memcpy(&buffer->bytes[buffer->count], bytes, count);
-    buffer->count += count;
+// @todo relative imports
+
+void apiConfig_loadModuleComplete(WrenVM* vm, const char* module, WrenLoadModuleResult result) {
+    if (result.source) free((void*)(result.source));
 }
 
-void write_string_to_buffer(Buffer *buffer, const char *string) {
-    write_buffer(buffer, (const uint8_t*)string, strlen(string));
-}
-
-void finish_buffer(Buffer *buffer) {
-    if (buffer->bytes) free(buffer->bytes);
-}
-
-int main(int argc, char **argv) {
-    const char *path = NULL;
-    char *module_name = NULL;
-    enum { RUN_CODE, HELP, LIST_SEARCH_DIRS, LIST_CMODULES, ERROR } mode = RUN_CODE;
-    push_search_dir(NULL); // For the directory containing the root module
-    char *env_search_dirs = getenv("GG_SEARCH_DIRS");
-    if (env_search_dirs) env_search_dirs = dup_string(env_search_dirs);
-    int env_search_dir_count = env_search_dirs ? 1 : env_search_dirs ? 1 : 0;
-    for (char *cursor = env_search_dirs; cursor && *cursor; cursor ++) {
-        if (*cursor == ':') {
-            *cursor = 0;
-            env_search_dir_count ++;
+WrenLoadModuleResult apiConfig_loadModule(WrenVM* vm, const char* name) {
+    WrenLoadModuleResult result = {0};
+    if (strcmp(name, "gg") == 0) {
+        result.source = GG_SOURCE;
+    } else if (name[0] == '/') {
+        // Forbid absolute pathnames. @todo make this do the right thing on Windows.
+        result.source = NULL;
+    } else {
+        for (size_t i = 0; (result.source == NULL) && (i < moduleSearchPathCount); i ++) {
+            printfBuffer(&modulePath, "%s/%s.wren", moduleSearchPaths[i], name);
+            result.source = readEntireFile(modulePath.bytes, NULL);
         }
     }
-    char bin_path[PATH_MAX];
-    ssize_t length = readlink("/proc/self/exe", bin_path, PATH_MAX - 1);
-    if (length >= 0) {
-        bin_path[length] = 0;
-        char *real_bin_path = realpath(bin_path, NULL);
-        char *bin_dir = dirname(real_bin_path);
-        push_search_dir(bin_dir);
-        free(real_bin_path);
-    }
-    #if defined(__linux__)
-    push_search_dir("/usr/lib/ggwren");
-    #endif
+    return result;
+}
 
-    size_t start = 0;
-    for (size_t i = 0; i < env_search_dir_count; i ++) {
-        push_search_dir(&env_search_dirs[start]);
-        start += strlen(&env_search_dirs[start]) + 1;
+int main(int argc_, char** argv_) {
+    enum {
+        OK,
+        INVALID_COMMAND_LINE_ARGS,
+        FATAL_ERROR,
+        COULD_NOT_READ_SCRIPT_SOURCE,
+        SCRIPT_COMPILATION_ERROR,
+        SCRIPT_RUNTIME_ERROR
+    } status = OK;
+    enum {
+        RUN_SCRIPT,
+        SHOW_HELP,
+        LIST_SEARCH_PATHS
+    } action = RUN_SCRIPT;
+
+    argc = argc_;
+    argv = argv_;
+    addModuleSearchPath(NULL);
+    if (status == OK) {
+        // Detect the binPath. Keep it NULL if this fails.
+        size_t capacity = 0;
+        ssize_t length = 0;
+        while ((status == OK) && (length >= capacity)) {
+            capacity = capacity ? capacity << 1 : 256;
+            binPath = realloc(binPath, capacity);
+            length = readlink("/proc/self/exe", binPath, capacity);
+            if (length < 0) {
+                fprintf(stderr, ERROR "Failed to read location of the GGWren executable "
+                        "readlink(..) failed.\n");
+                status = FATAL_ERROR;
+            }
+        }
+        if (status == OK) {
+            char *realBinPath = realpath(binPath, NULL);
+            if (realBinPath) {
+                free(binPath);
+                binPath = realBinPath;
+            } else {
+                fprintf(stderr, ERROR "Failed to read location of the GGWren executable "
+                        "realpath(..) failed.\n");
+                status = FATAL_ERROR;
+            }
+        } 
+        if (status != OK) {
+            if (binPath) free(binPath);
+            binPath = NULL;
+        }
     }
-    if (env_search_dirs) free(env_search_dirs);
-    enum { NORMAL } arg_mode = NORMAL;
-    for (size_t i = 1; i < argc; i ++) {
-        char *arg = argv[i];
-        switch (arg_mode) {
-            case NORMAL: {
-                if (strcmp(arg, "--list-search-dirs") == 0) {
-                    mode = LIST_SEARCH_DIRS;
-                } else if (strcmp(arg, "--list-cmodules") == 0) {
-                    mode = LIST_CMODULES;
+    if (binPath) {
+        char *tempBinPath = dupString(binPath);
+        binDir = dupString(dirname(tempBinPath));
+        free(tempBinPath);
+    }
+    Buffer argKey = {0};
+    Buffer argValue = {0};
+    bool foundScriptPath = false;
+    for (size_t i = 1; (status == OK) && !foundScriptPath && (i < argc); i ++) {
+        char* arg = argv[i];
+        size_t argLength = strlen(arg);
+        bool argValueExists = false;
+        argKey.count = 0;
+        argValue.count = 0;
+        pushBuffer(&argKey, arg);
+        for (size_t i = 0; i < argLength; i ++) {
+            if (arg[i] == '=') {
+                argKey.count = 0;
+                pushBytesToBuffer(&argKey, arg, i);
+                pushBuffer(&argValue, &arg[i+1]);
+                argValueExists = true;
+                break;
+            }
+        }
+        if (arg[0] == '-') {
+            if      (strcmp(arg, "-list-lib-paths") == 0) action = LIST_SEARCH_PATHS;
+            else if (strcmp(argKey.bytes, "-lib") == 0) {
+                if (argValueExists) {
+                    char *searchPath = realpath(argValue.bytes, NULL);
+                    if (searchPath) {
+                        addModuleSearchPath(searchPath);
+                        free(searchPath);
+                    } else {
+                        addModuleSearchPath(argValue.bytes);
+                    }
                 } else {
-                    path = arg;
-                    global_argv = &argv[i];
-                    global_argc = argc - i;
-                    i = argc;
-                }
-            } break;
-        }
-    }
-
-    if ((mode == NORMAL) && !path) {
-        mode = HELP;
-    }
-
-    loadCModules();
-    /*
-    for (CModule *cmodule = cmodules; cmodule; cmodule = cmodule->next) {
-        printf("# %s\n", cmodule->name);
-        for (ForeignClass *class = cmodule->foreignClasses; class; class=class->next) {
-            printf("  +- class %s\n", class->name);
-        }
-        for (ForeignMethod *method = cmodule->foreignMethods; method; method=method->next) {
-            printf("  +- %s.%s\n", method->class, method->signature);
-        }
-    }
-    */
-    switch (mode) {
-        case RUN_CODE: {
-            char *source = readEntireFile(path);
-            if (source) {
-                char *real_path = realpath(path, NULL);
-                module_name = dup_string(real_path);
-                scriptPath = dup_string(real_path);
-                char *dir = dirname(real_path);
-                search_dirs[0] = dup_string(dir);
-                scriptDir = dup_string(dir);
-                free(real_path);
-
-                if (strlen(module_name) >= 5) {
-                    if (strcmp(&module_name[strlen(module_name)-5], ".wren") == 0) {
-                        module_name[strlen(module_name)-5] = 0;
-                    }
-                }
-                for (char *i = &module_name[strlen(module_name)-1]; i > module_name; i --) {
-                    if ((*i == '\\') || (*i == '/')) {
-                        memmove(module_name, i + 1, strlen(i));
-                    }
+                    fprintf(stderr, ERROR "You must supply a path with the `-lib` argument:\n\n");
+                    fprintf(stderr, "    %s -lib=<path> ...\n\n", argv[0]);
+                    status = INVALID_COMMAND_LINE_ARGS;
                 }
             } else {
-                fprintf(stderr, "Could not load `%s`.\n", path);
-                mode = ERROR;
+                fprintf(stderr, ERROR "Unknown option `%s`. Please run `%s -help` for a complete\n"
+                        "list of command-line options.\n", argKey.bytes, argv[0]);
+                status = INVALID_COMMAND_LINE_ARGS;
             }
-            if (source) {
-                WrenConfiguration config;
-                wrenInitConfiguration(&config);
-                config.writeFn = &wren__write;
-                config.errorFn = &wren__error;
-                config.loadModuleFn = &wren__loadModule;
-                config.bindForeignMethodFn = &wren__bindForeignMethod;
-                config.bindForeignClassFn = &wren__bindForeignClass;
-                WrenVM *vm = wrenNewVM(&config);
-                WrenInterpretResult result = wrenInterpret(
-                    vm,
-                    module_name,
-                    source
-                );
-                wrenFreeVM(vm);
-                if (result != WREN_RESULT_SUCCESS) mode = ERROR;
+        } else {
+            scriptPath = realpath(arg, NULL);
+            if (scriptPath) {
+                char *tempScriptPath = dupString(scriptPath);
+                scriptDir = dupString(dirname(tempScriptPath));
+                free(tempScriptPath);
+            } else {
+                scriptPath = dupString(arg);
             }
-            if (source) free(source);
+            scriptArgv = &argv[i];
+            scriptArgc = argc - i;
+            foundScriptPath = true;
+        }
+    }
+    finishBuffer(&argKey);
+    finishBuffer(&argValue);
+    if ((status == OK) && (action == RUN_SCRIPT)) {
+        if (scriptPath) {       
+            scriptSource = readEntireFile(scriptPath, NULL);
+            char* tempScriptPath = dupString(scriptPath);
+            scriptModuleName = dupString(basename(tempScriptPath));
+            free(tempScriptPath);
+            size_t length = strlen(scriptModuleName);
+            if ((strlen(scriptModuleName) >= 5) && 
+                    (strcmp(&scriptModuleName[length - 5], ".wren") == 0))
+            {
+                scriptModuleName[length - 5] = 0;
+            }
+            if (!scriptSource) {
+                status = COULD_NOT_READ_SCRIPT_SOURCE;
+                fprintf(stderr, ERROR "Could not read script file `%s`.\n", scriptPath);
+            }
+        } else {
+            action = SHOW_HELP;
+            status = INVALID_COMMAND_LINE_ARGS;
+        }
+    }
+    if (scriptDir) moduleSearchPaths[0] = dupString(scriptDir);
+    if (binDir) addModuleSearchPath(binDir);
+    addModuleSearchPath("/usr/lib/ggwren");
+    if (tooManyModuleSearchPaths) {
+        fprintf(stderr, "\x1b[33;1m[WARNING]\x1b[m ");
+        fprintf(stderr, "Too many module search paths were added (the limit is %s); the extras\n"
+                "were ignored.", MAX_MODULE_SEARCH_PATHS);
+    }
+    {
+        Ext* ext = malloc(sizeof(Ext));
+        ext->name = dupString("builtins");
+        ext->handle = NULL;
+        ext->classes = NULL;
+        ext->methods = NULL;
+        ext->next = extensions;
+        extensions = ext;
+        extBeingInitialized = ext;
+        initBuiltins();
+        extBeingInitialized = NULL;
+    }
+    switch (action) {
+        case RUN_SCRIPT: if (status == OK) {
+            wrenInitConfiguration(&config);
+            config.writeFn = &apiConfig_write;
+            config.errorFn = &apiConfig_error;
+            config.bindForeignMethodFn = &apiConfig_bindForeignMethod;
+            config.bindForeignClassFn = &apiConfig_bindForeignClass;
+            config.loadModuleFn = &apiConfig_loadModule;
+            vm = wrenNewVM(&config);
+            WrenInterpretResult result = wrenInterpret(
+                vm,
+                scriptModuleName,
+                scriptSource
+            );
+            switch (result) {
+                case WREN_RESULT_SUCCESS: { status = OK; } break;
+                case WREN_RESULT_COMPILE_ERROR: { status = SCRIPT_COMPILATION_ERROR; } break;
+                case WREN_RESULT_RUNTIME_ERROR: { status = SCRIPT_RUNTIME_ERROR; } break;
+            }
         } break;
-        case HELP: {
-            fprintf(stderr, "Usage:\n\n    %s [options] <path>\n\n", argv[0]);
+        case SHOW_HELP: {
+            fprintf(stderr, HELP, argv[0]);
         } break;
-        case LIST_SEARCH_DIRS: {
-            fprintf(stderr, "When loading modules, the following directories will be searched\n");
-            fprintf(stderr, "in descending order:\n\n");
-            for (size_t i = 0; i < search_dir_count; i ++) {
-                if (search_dirs[i]) {
-                    fprintf(stderr, " - %s\n", search_dirs[i]);
+        case LIST_SEARCH_PATHS: if (status == OK) {
+            fprintf(stderr, "When importing modules, paths will be searched in the "
+                    "following order:\n\n");
+            for (size_t i = 0; i < moduleSearchPathCount; i ++) {
+                if (moduleSearchPaths[i]) {
+                    printf(" - %s\n", moduleSearchPaths[i]);
                 } else {
-                    fprintf(stderr, " - (the directory containing the root module)\n");
+                    printf(" - (the directory containing the root script)\n");
                 }
             }
             fprintf(stderr, "\n");
         } break;
-        case LIST_CMODULES: {
-            fprintf(stderr, "The following cmodules are available:\n\n");
-            for (CModule *cmodule = cmodules; cmodule; cmodule = cmodule->next) {
-                fprintf(stderr, " - %s\n", cmodule->name);
-            }
-            fprintf(stderr, "\n");
-        } break;
-        case ERROR: {
-            // do nothing
-        } break;
     }
-    for (size_t i = 0; i < search_dir_count; i ++) {
-        if (search_dirs[i]) free(search_dirs[i]);
+    if (vm) wrenFreeVM(vm);
+    Ext* nextExt;
+    for (Ext *ext = extensions; ext; ext = nextExt) {
+        if (ext->handle) {
+            ggExt_FinishFn extFinish = getExtFn(ext->handle, "ggExt_finish");
+            if (extFinish) extFinish();
+            closeExt(ext->handle);
+        }
+        ExtClass* nextClass;
+        for (ExtClass *class = ext->classes; class; class = nextClass) {
+            nextClass = class->next;
+            free(class);
+        }
+        ExtMethod* nextMethod;
+        for (ExtMethod *method = ext->methods; method; method = nextMethod) {
+            nextMethod = method->next;
+            free(method);
+        }
+        nextExt = ext->next;
+        free(ext->name);
+        free(ext);
     }
+    for (size_t i = 0; i < moduleSearchPathCount; i ++) {
+        free(moduleSearchPaths[i]);
+    }
+    if (binPath) free(binPath);
+    if (binDir) free(binDir);
     if (scriptPath) free(scriptPath);
+    if (scriptSource) free(scriptSource);
+    if (scriptModuleName) free(scriptModuleName);
     if (scriptDir) free(scriptDir);
-    if (search_dirs) free(search_dirs);
-    if (module_name) free(module_name);
-    return mode == ERROR ? 2 : 0;
+    finishBuffer(&foreignMethodSignature);
+    finishBuffer(&modulePath);
+    switch (status) {
+        case OK:                            return scriptExitCode;
+        case SCRIPT_RUNTIME_ERROR:          return EXITCODE_RUNTIME_ERROR;
+        case SCRIPT_COMPILATION_ERROR:      return EXITCODE_COMPILATION_ERROR;
+        case INVALID_COMMAND_LINE_ARGS:     return EXITCODE_INVALID_COMMAND_LINE_ARGS;
+        case COULD_NOT_READ_SCRIPT_SOURCE:  return EXITCODE_COULD_NOT_READ_SCRIPT_SOURCE;
+        case FATAL_ERROR:                   return EXITCODE_FATAL_ERROR;
+    }
 }

@@ -1,6 +1,6 @@
 import "gg" for GG
 
-GG.bind("gg_stdlib")
+GG.bind("builtins")
 
 class Platform {
     foreign static name

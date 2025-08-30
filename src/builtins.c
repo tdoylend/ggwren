@@ -1,35 +1,49 @@
+// GGWren
+// Copyright 2025 Thomas Doylend. All rights reserved.
+// For licensing information, please view the LICENSE.txt file.
+
 #include <errno.h>
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
 
+#include <wren.h>
+
+// Platform-specific includes
+#ifdef __linux__
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
-
-#include "ggwren.h"
-
 extern char **environ;
+#elif defined(_WIN32)
+#error
+#endif
 
-typedef struct ByteBuffer ByteBuffer;
-struct ByteBuffer {
+#include "gg.h"
+
+bool hpcInitialized = false;
+uint64_t hpcEpoch;
+
+typedef struct Buffer Buffer;
+struct Buffer {
     uint8_t *bytes;
     size_t count;
     size_t capacity;
 };
 
-static void apiAllocate__ByteBuffer(WrenVM *vm) {
-    ByteBuffer *buffer = wrenSetSlotNewForeign(vm, 0, 0, sizeof(ByteBuffer));
-    memset(buffer, 0, sizeof(ByteBuffer));
+static void apiAllocate_Buffer(WrenVM *vm) {
+    Buffer *buffer = wrenSetSlotNewForeign(vm, 0, 0, sizeof(Buffer));
+    memset(buffer, 0, sizeof(Buffer));
 }
 
-static void apiFinalize__ByteBuffer(void *raw) {
-    ByteBuffer *buffer = raw;
+static void apiFinalize_Buffer(void *raw) {
+    Buffer *buffer = raw;
     if (buffer->bytes) free(buffer->bytes);
 }
 
-static void write_bytebuffer(ByteBuffer *buffer, const uint8_t *bytes, size_t count) {
+static void writeBuffer(Buffer *buffer, const uint8_t *bytes, size_t count) {
     if (count > 0) {
         if ((buffer->count + count) > buffer->capacity) {
             buffer->capacity = nextPowerOfTwo(buffer->count + count);
@@ -40,24 +54,24 @@ static void write_bytebuffer(ByteBuffer *buffer, const uint8_t *bytes, size_t co
     }
 }
 
-static void api__ByteBuffer__write__1(WrenVM *vm) {
-    ByteBuffer *buffer = wrenGetSlotForeign(vm, 0);
+static void api_Buffer_write_1(WrenVM *vm) {
+    Buffer *buffer = wrenGetSlotForeign(vm, 0);
     int count;
     if (wrenGetSlotType(vm, 1) == WREN_TYPE_STRING) {
         const uint8_t *bytes = wrenGetSlotBytes(vm, 1, &count);
-        write_bytebuffer(buffer, bytes, (size_t)count);
+        writeBuffer(buffer, bytes, (size_t)count);
         wrenSetSlotNull(vm, 0);
     } else {
-        wrenSetSlotString(vm, 0, "Cannot write a non-String to ByteBuffer.");
+        wrenSetSlotString(vm, 0, "Cannot write a non-String to Buffer.");
         wrenAbortFiber(vm, 0);
     }
 }
 
-static void api__ByteBuffer__writeByte__1(WrenVM *vm) {
-    ByteBuffer *buffer = wrenGetSlotForeign(vm, 0);
+static void api_Buffer_writeByte_1(WrenVM *vm) {
+    Buffer *buffer = wrenGetSlotForeign(vm, 0);
     if (wrenGetSlotType(vm, 1) == WREN_TYPE_NUM) {
         uint8_t byte = (uint8_t)wrenGetSlotDouble(vm, 1);
-        write_bytebuffer(buffer, &byte, 1);
+        writeBuffer(buffer, &byte, 1);
         wrenSetSlotNull(vm, 0);
     } else {
         wrenSetSlotString(vm, 0, "You must provide a Num as the byte to write.");
@@ -65,8 +79,8 @@ static void api__ByteBuffer__writeByte__1(WrenVM *vm) {
     }
 }
 
-static void api__ByteBuffer__read__0(WrenVM *vm) {
-    ByteBuffer *buffer = wrenGetSlotForeign(vm, 0);
+static void api_Buffer_read_0(WrenVM *vm) {
+    Buffer *buffer = wrenGetSlotForeign(vm, 0);
     if (buffer->bytes) {
         wrenSetSlotBytes(vm, 0, buffer->bytes, buffer->count);
     } else {
@@ -74,13 +88,13 @@ static void api__ByteBuffer__read__0(WrenVM *vm) {
     }
 }
 
-static void api__ByteBuffer__size__getter(WrenVM *vm) {
-    ByteBuffer *buffer = wrenGetSlotForeign(vm, 0);
+static void api_Buffer_size_getter(WrenVM *vm) {
+    Buffer *buffer = wrenGetSlotForeign(vm, 0);
     wrenSetSlotDouble(vm, 0, (double)buffer->count);
 }
 
-static void api__ByteBuffer__truncate__1(WrenVM *vm) {
-    ByteBuffer *buffer = wrenGetSlotForeign(vm, 0);
+static void api_Buffer_truncate_1(WrenVM *vm) {
+    Buffer *buffer = wrenGetSlotForeign(vm, 0);
     if (wrenGetSlotType(vm, 1) == WREN_TYPE_NUM) {
         size_t count = (size_t)wrenGetSlotDouble(vm, 1);
         if (count < buffer->count) buffer->count = count;
@@ -90,18 +104,18 @@ static void api__ByteBuffer__truncate__1(WrenVM *vm) {
     }
 }
 
-static void api__ByteBuffer__clear__0(WrenVM *vm) {
-    ByteBuffer *buffer = wrenGetSlotForeign(vm, 0);
+static void api_Buffer_clear_0(WrenVM *vm) {
+    Buffer *buffer = wrenGetSlotForeign(vm, 0);
     buffer->count = 0;
     wrenSetSlotNull(vm, 0);
 }
 
-static void apiStatic__Platform__name__getter(WrenVM *vm) {
+static void apiStatic_Platform_name_getter(WrenVM *vm) {
     const char *result = "Unknown";
-    #ifdef __linux__
+    #ifdef _linux_
         result = "Linux";
     #endif
-    #ifdef __APPLE__
+    #ifdef _APPLE_
         result = "OS X";
     #endif
     #ifdef _WIN32
@@ -110,9 +124,9 @@ static void apiStatic__Platform__name__getter(WrenVM *vm) {
     wrenSetSlotString(vm, 0, result);
 }
 
-static void apiStatic__Platform__isPosix__getter(WrenVM *vm) {
+static void apiStatic_Platform_isPosix_getter(WrenVM *vm) {
     bool isPosix = 
-    #if defined(__unix__) || (defined(__APPLE__) && defined(__MACH))
+    #if defined(_unix_) || (defined(_APPLE_) && defined(_MACH))
         true
     #else
         false
@@ -121,7 +135,7 @@ static void apiStatic__Platform__isPosix__getter(WrenVM *vm) {
     wrenSetSlotBool(vm, 0, isPosix);
 }
 
-static void apiStatic__Platform__isWindows__getter(WrenVM *vm) {
+static void apiStatic_Platform_isWindows_getter(WrenVM *vm) {
     bool isWindows = 
     #ifdef _WIN32
         true
@@ -132,15 +146,15 @@ static void apiStatic__Platform__isWindows__getter(WrenVM *vm) {
     wrenSetSlotBool(vm, 0, isWindows);
 }
 
-static void apiStatic__Platform__arch__getter(WrenVM *vm) {
+static void apiStatic_Platform_arch_getter(WrenVM *vm) {
     const char *arch =
-    #if defined(__x64_64__)
+    #if defined(_x64_64_)
     "x86_64"
-    #elif defined(__i386)
+    #elif defined(_i386)
     "i386"
-    #elif defined(__aarch64__)
+    #elif defined(_aarch64_)
     "aarch64"
-    #elif defined(__arm__)
+    #elif defined(_arm_)
     "arm"
     #else
     "unknown"
@@ -160,7 +174,7 @@ static void abortErrno(WrenVM *vm, int e) {
     wrenAbortFiber(vm, 0);
 }
 
-static void apiOpGetIndex__Environ(WrenVM *vm) {
+static void apiOpGetIndex_Environ(WrenVM *vm) {
     const char *key;
     bool ok = true;
     if (wrenGetSlotType(vm, 1) == WREN_TYPE_STRING) {
@@ -180,7 +194,7 @@ static void apiOpGetIndex__Environ(WrenVM *vm) {
     }
 }
 
-static void apiOpSetIndex__Environ__1(WrenVM *vm) {
+static void apiOpSetIndex_Environ_1(WrenVM *vm) {
     bool ok = true;
     const char *key;
     const char *value;
@@ -221,7 +235,7 @@ static void apiOpSetIndex__Environ__1(WrenVM *vm) {
 }
 
 static
-void api__Environ__keyAt__1(WrenVM *vm) {
+void api_Environ_keyAt_1(WrenVM *vm) {
     size_t index = (size_t)wrenGetSlotDouble(vm, 1);
     if (environ[index]) {
         size_t i;
@@ -235,7 +249,7 @@ void api__Environ__keyAt__1(WrenVM *vm) {
 }
 
 static
-void api__Environ__valueAt__1(WrenVM *vm) {
+void api_Environ_valueAt_1(WrenVM *vm) {
     size_t index = (size_t)wrenGetSlotDouble(vm, 1);
     if (environ[index]) {
         size_t i;
@@ -250,11 +264,11 @@ void api__Environ__valueAt__1(WrenVM *vm) {
 }
 
 static
-void apiStatic__Process__arguments__getter(WrenVM *vm) {
+void apiStatic_Process_arguments_getter(WrenVM *vm) {
     wrenEnsureSlots(vm, 2);
     wrenSetSlotNewList(vm, 0);
-    for (size_t i = 0; i < global_argc; i ++) {
-        wrenSetSlotString(vm, 1, global_argv[i]);
+    for (size_t i = 0; i < scriptArgc; i ++) {
+        wrenSetSlotString(vm, 1, scriptArgv[i]);
         wrenInsertInList(vm, 0, -1, 1);
     }
 }
@@ -264,7 +278,7 @@ struct File {
     int fd;
 };
 
-static void apiAllocate__File(WrenVM *vm) {
+static void apiAllocate_File(WrenVM *vm) {
     const char *path = wrenGetSlotString(vm, 1);
     const char *mode = wrenGetSlotString(vm, 2);
     bool reading = false;
@@ -307,14 +321,14 @@ static void apiAllocate__File(WrenVM *vm) {
     }
 }
 
-static void apiFinalize__File(void *file_raw) {
+static void apiFinalize_File(void *file_raw) {
     File *file = file_raw;
     if (file->fd >= 0) {
         close(file->fd);
     }
 }
 
-static void api__File__size__getter(WrenVM *vm) {
+static void api_File_size_getter(WrenVM *vm) {
     File *file = wrenGetSlotForeign(vm, 0);
     if (file->fd >= 0) {
         struct stat st; 
@@ -329,7 +343,7 @@ static void api__File__size__getter(WrenVM *vm) {
     }
 }
 
-static void api__File__read__1(WrenVM *vm) {
+static void api_File_read_1(WrenVM *vm) {
     File *file = wrenGetSlotForeign(vm, 0);
     size_t count = (size_t)wrenGetSlotDouble(vm, 1);
     if (file->fd >= 0) {
@@ -353,7 +367,7 @@ static void api__File__read__1(WrenVM *vm) {
     }
 }
 
-void api__File__seek__1(WrenVM *vm) {
+void api_File_seek_1(WrenVM *vm) {
     File *file = wrenGetSlotForeign(vm, 0);
     size_t where = (size_t)wrenGetSlotDouble(vm, 1);
     if (file->fd >= 0) {
@@ -368,7 +382,7 @@ void api__File__seek__1(WrenVM *vm) {
     }
 }
 
-void api__File__tell__0(WrenVM *vm) {
+void api_File_tell_0(WrenVM *vm) {
     File *file = wrenGetSlotForeign(vm, 0);
     if (file->fd >= 0) {
         off_t where = lseek(file->fd, 0, SEEK_CUR);
@@ -383,7 +397,7 @@ void api__File__tell__0(WrenVM *vm) {
     }
 }
 
-void api__File__write__1(WrenVM *vm) {
+void api_File_write_1(WrenVM *vm) {
     File *file = wrenGetSlotForeign(vm, 0);
     if (file->fd >= 0) {
         int length;
@@ -400,7 +414,7 @@ void api__File__write__1(WrenVM *vm) {
     }
 }
 
-void api__File__close__0(WrenVM *vm) {
+void api_File_close_0(WrenVM *vm) {
     File *file = wrenGetSlotForeign(vm, 0);
     if (file->fd >= 0) {
         close(file->fd);
@@ -411,7 +425,7 @@ void api__File__close__0(WrenVM *vm) {
     
 }
 
-void apiStatic__Fs__pathSep__getter(WrenVM *vm) {
+void apiStatic_Fs_pathSep_getter(WrenVM *vm) {
     const char *pathSep =
     #ifdef _WIN32
     "\\"
@@ -422,7 +436,7 @@ void apiStatic__Fs__pathSep__getter(WrenVM *vm) {
     wrenSetSlotString(vm, 0, pathSep);
 }
 
-void apiStatic__Fs__canonical__1(WrenVM *vm) {
+void apiStatic_Fs_canonical_1(WrenVM *vm) {
     char *path = realpath(wrenGetSlotString(vm, 1), NULL);
     if (path != NULL) {
         wrenSetSlotString(vm, 0, path);
@@ -436,7 +450,7 @@ void apiStatic__Fs__canonical__1(WrenVM *vm) {
     }
 }
 
-void apiStatic__Fs__listDir__1(WrenVM *vm) {
+void apiStatic_Fs_listDir_1(WrenVM *vm) {
     DIR *dir;
     struct dirent *entry;
     dir = opendir(wrenGetSlotString(vm, 1));
@@ -459,7 +473,7 @@ void apiStatic__Fs__listDir__1(WrenVM *vm) {
     }
 }
 
-void apiStatic__Fs__fileSize__1(WrenVM *vm) {
+void apiStatic_Fs_fileSize_1(WrenVM *vm) {
     struct stat st;
     if (stat(wrenGetSlotString(vm, 1), &st) >= 0) {
         wrenSetSlotDouble(vm, 0, (double)(st.st_size));
@@ -468,7 +482,7 @@ void apiStatic__Fs__fileSize__1(WrenVM *vm) {
     }
 }
 
-void apiStatic__Fs__readLink__1(WrenVM *vm) {
+void apiStatic_Fs_readLink_1(WrenVM *vm) {
     size_t buf_cap = 256;
     char *buf = malloc(buf_cap);
     errno = 0;
@@ -485,7 +499,7 @@ void apiStatic__Fs__readLink__1(WrenVM *vm) {
     free(buf);
 }
 
-void apiStatic__Fs__exists__1(WrenVM *vm) {
+void apiStatic_Fs_exists_1(WrenVM *vm) {
     struct stat st;
     if (stat(wrenGetSlotString(vm, 1), &st) >= 0) {
         wrenSetSlotBool(vm, 0, true);
@@ -498,7 +512,7 @@ void apiStatic__Fs__exists__1(WrenVM *vm) {
     }
 }
 
-void apiStatic__Fs__isFile__1(WrenVM *vm) {
+void apiStatic_Fs_isFile_1(WrenVM *vm) {
     struct stat st;
     if (stat(wrenGetSlotString(vm, 1), &st) >= 0) {
         wrenSetSlotBool(vm, 0, st.st_mode & S_IFREG);
@@ -511,7 +525,7 @@ void apiStatic__Fs__isFile__1(WrenVM *vm) {
     }
 }
 
-void apiStatic__Fs__isDir__1(WrenVM *vm) {
+void apiStatic_Fs_isDir_1(WrenVM *vm) {
     struct stat st;
     if (stat(wrenGetSlotString(vm, 1), &st) >= 0) {
         wrenSetSlotBool(vm, 0, st.st_mode & S_IFDIR);
@@ -524,7 +538,7 @@ void apiStatic__Fs__isDir__1(WrenVM *vm) {
     }
 }
 
-void apiStatic__Fs__isLink__1(WrenVM *vm) {
+void apiStatic_Fs_isLink_1(WrenVM *vm) {
     struct stat st;
     if (lstat(wrenGetSlotString(vm, 1), &st) >= 0) {
         wrenSetSlotBool(vm, 0, st.st_mode & S_IFLNK);
@@ -537,47 +551,83 @@ void apiStatic__Fs__isLink__1(WrenVM *vm) {
     }
 }
 
-void apiInit__stdlib(void) {
-    CModule *gg_stdlib = register_cmodule("gg_stdlib");
+void apiStatic_Time_now_getter(WrenVM* vm) {
+    struct timespec now;
+    (void)clock_gettime(CLOCK_REALTIME, &now);
 
-    register_class(gg_stdlib, "ByteBuffer", &apiAllocate__ByteBuffer, &apiFinalize__ByteBuffer);
-    register_method(gg_stdlib, "ByteBuffer", "write(_)", &api__ByteBuffer__write__1);
-    register_method(gg_stdlib, "ByteBuffer", "writeByte(_)", &api__ByteBuffer__writeByte__1);
-    register_method(gg_stdlib, "ByteBuffer", "read()", &api__ByteBuffer__read__0);
-    register_method(gg_stdlib, "ByteBuffer", "size", &api__ByteBuffer__size__getter);
-    register_method(gg_stdlib, "ByteBuffer", "truncate(_)", &api__ByteBuffer__truncate__1);
-    register_method(gg_stdlib, "ByteBuffer", "clear()", &api__ByteBuffer__clear__0);
+    double result = (double)(now.tv_nsec) * 0.000000001;
+    result += (double)(now.tv_sec);
+    wrenSetSlotDouble(vm, 0, result);
+}
 
-    register_method(gg_stdlib, "Platform", "static name", &apiStatic__Platform__name__getter);
-    register_method(gg_stdlib, "Platform", "static isPosix", &apiStatic__Platform__isPosix__getter);
-    register_method(gg_stdlib, "Platform", "static isWindows",
-            &apiStatic__Platform__isWindows__getter);
-    register_method(gg_stdlib, "Platform", "static arch", &apiStatic__Platform__arch__getter);
+void apiStatic_Time_sleep_1(WrenVM* vm) {
+    usleep((uint64_t)(wrenGetSlotDouble(vm, 1) * 0.000000001));
+    wrenSetSlotNull(vm, 0);
+}
 
-    register_method(gg_stdlib, "Environ", "[_]", &apiOpGetIndex__Environ);
-    register_method(gg_stdlib, "Environ", "[_]=(_)", &apiOpSetIndex__Environ__1);
-    register_method(gg_stdlib, "Environ", "keyAt_(_)", &api__Environ__keyAt__1);
-    register_method(gg_stdlib, "Environ", "valueAt_(_)", &api__Environ__valueAt__1);
+void apiStatic_Time_hpc_getter(WrenVM* vm) {
+    struct timespec now;
+    (void)clock_gettime(CLOCK_MONOTONIC_RAW, &now);
 
-    register_method(gg_stdlib, "Process", "static arguments",
-            &apiStatic__Process__arguments__getter);
+    uint64_t hpcNow = now.tv_sec * 100000000 + (now.tv_nsec / 10);
 
-    register_class(gg_stdlib, "File", &apiAllocate__File, &apiFinalize__File);
-    register_method(gg_stdlib, "File", "size", &api__File__size__getter);
-    register_method(gg_stdlib, "File", "read(_)", &api__File__read__1);
-    register_method(gg_stdlib, "File", "seek(_)", &api__File__seek__1);
-    register_method(gg_stdlib, "File", "tell()", &api__File__tell__0);
-    register_method(gg_stdlib, "File", "write(_)", &api__File__write__1);
-    register_method(gg_stdlib, "File", "close()", &api__File__close__0);
-    //register_method(gg_stdlib, "File", "blocking", &api__File__blocking__getter);
-    //register_method(gg_stdlib, "File", "blocking=(_)", &api__File__blocking__setter__1);
-    register_method(gg_stdlib, "Fs", "static pathSep", &apiStatic__Fs__pathSep__getter);
-    register_method(gg_stdlib, "Fs", "static canonical(_)", &apiStatic__Fs__canonical__1);
-    register_method(gg_stdlib, "Fs", "static listDir(_)", &apiStatic__Fs__listDir__1);
-    register_method(gg_stdlib, "Fs", "static fileSize(_)", &apiStatic__Fs__fileSize__1);
-    register_method(gg_stdlib, "Fs", "static readLink(_)", &apiStatic__Fs__readLink__1);
-    register_method(gg_stdlib, "Fs", "static exists(_)", &apiStatic__Fs__exists__1);
-    register_method(gg_stdlib, "Fs", "static isFile(_)", &apiStatic__Fs__isFile__1);
-    register_method(gg_stdlib, "Fs", "static isDir(_)", &apiStatic__Fs__isDir__1);
-    register_method(gg_stdlib, "Fs", "static isLink(_)", &apiStatic__Fs__isLink__1);
+    if (!hpcInitialized) {
+        hpcInitialized = true;
+        hpcEpoch = hpcNow;
+        wrenSetSlotDouble(vm, 0, 0.0f);
+    } else {
+        wrenSetSlotDouble(vm, 0, (double)(hpcNow - hpcEpoch));
+    }
+}
+
+void apiStatic_Time_hpcResolution_getter(WrenVM* vm) {
+    wrenSetSlotDouble(vm, 0, 100000000.0f);
+}
+
+void initBuiltins(void) {
+    ggRegisterClass("Buffer", &apiAllocate_Buffer, &apiFinalize_Buffer);
+    ggRegisterMethod("Buffer", "write(_)", &api_Buffer_write_1);
+    ggRegisterMethod("Buffer", "writeByte(_)", &api_Buffer_writeByte_1);
+    ggRegisterMethod("Buffer", "read()", &api_Buffer_read_0);
+    ggRegisterMethod("Buffer", "size", &api_Buffer_size_getter);
+    ggRegisterMethod("Buffer", "truncate(_)", &api_Buffer_truncate_1);
+    ggRegisterMethod("Buffer", "clear()", &api_Buffer_clear_0);
+
+    ggRegisterMethod("Platform", "static name", &apiStatic_Platform_name_getter);
+    ggRegisterMethod("Platform", "static isPosix", &apiStatic_Platform_isPosix_getter);
+    ggRegisterMethod("Platform", "static isWindows",
+            &apiStatic_Platform_isWindows_getter);
+    ggRegisterMethod("Platform", "static arch", &apiStatic_Platform_arch_getter);
+
+    ggRegisterMethod("Environ", "[_]", &apiOpGetIndex_Environ);
+    ggRegisterMethod("Environ", "[_]=(_)", &apiOpSetIndex_Environ_1);
+    ggRegisterMethod("Environ", "keyAt_(_)", &api_Environ_keyAt_1);
+    ggRegisterMethod("Environ", "valueAt_(_)", &api_Environ_valueAt_1);
+
+    ggRegisterMethod("Process", "static arguments",
+            &apiStatic_Process_arguments_getter);
+
+    ggRegisterClass("File", &apiAllocate_File, &apiFinalize_File);
+    ggRegisterMethod("File", "size", &api_File_size_getter);
+    ggRegisterMethod("File", "read(_)", &api_File_read_1);
+    ggRegisterMethod("File", "seek(_)", &api_File_seek_1);
+    ggRegisterMethod("File", "tell()", &api_File_tell_0);
+    ggRegisterMethod("File", "write(_)", &api_File_write_1);
+    ggRegisterMethod("File", "close()", &api_File_close_0);
+    //ggRegisterMethod("File", "blocking", &api_File_blocking_getter);
+    //ggRegisterMethod("File", "blocking=(_)", &api_File_blocking_setter_1);
+    ggRegisterMethod("Fs", "static pathSep", &apiStatic_Fs_pathSep_getter);
+    ggRegisterMethod("Fs", "static canonical(_)", &apiStatic_Fs_canonical_1);
+    ggRegisterMethod("Fs", "static listDir(_)", &apiStatic_Fs_listDir_1);
+    ggRegisterMethod("Fs", "static fileSize(_)", &apiStatic_Fs_fileSize_1);
+    ggRegisterMethod("Fs", "static readLink(_)", &apiStatic_Fs_readLink_1);
+    ggRegisterMethod("Fs", "static exists(_)", &apiStatic_Fs_exists_1);
+    ggRegisterMethod("Fs", "static isFile(_)", &apiStatic_Fs_isFile_1);
+    ggRegisterMethod("Fs", "static isDir(_)", &apiStatic_Fs_isDir_1);
+    ggRegisterMethod("Fs", "static isLink(_)", &apiStatic_Fs_isLink_1);
+
+    ggRegisterMethod("Time", "static now", &apiStatic_Time_now_getter);
+    ggRegisterMethod("Time", "static sleep(_)", &apiStatic_Time_sleep_1);
+    ggRegisterMethod("Time", "static hpc", &apiStatic_Time_hpc_getter);
+    ggRegisterMethod("Time", "static hpcResolution", &apiStatic_Time_hpcResolution_getter);
 }

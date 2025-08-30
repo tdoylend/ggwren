@@ -1,10 +1,10 @@
-import "lib:string" for StringUtil as S
-import "lib:io:stream" for Stream
-import "lib:buffer" for ByteBuffer
+import "lib/string" for StringUtil as S
+import "lib/io/stream" for Stream
+import "lib/buffer" for Buffer
 
 import "gg" for GG
 
-GG.bind("gg_stdlib")
+GG.bind("builtins")
 
 foreign class File is Stream {
     construct open(path, mode) {}
@@ -15,7 +15,7 @@ foreign class File is Stream {
     foreign read(bytes)
 
     read() {
-        var buffer = ByteBuffer.new()
+        var buffer = Buffer.new()
         var reading = true
         while (reading) {
             var text = read(4096)

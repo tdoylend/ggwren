@@ -1,4 +1,4 @@
-import "lib:encodings:json" for JSON
+import "lib/encodings/json" for JSON
 import "test" for Test
 
 Test.require("empty_list"){ JSON.decode("[]").count == 0 }

@@ -1,5 +1,5 @@
 import "test" for Test
-import "lib:string" for StringUtil as S
+import "lib/string" for StringUtil as S
 
 Test.require("upper"){ S.asciiUpper("TyRannOsAurUS RezZ.2") == "TYRANNOSAURUS REZZ.2" }
 Test.require("lower"){ S.asciiLower("AzAzaZaZ pqRQ 324!") == "azazazaz pqrq 324!" }

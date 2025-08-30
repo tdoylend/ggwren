@@ -1,6 +1,6 @@
 import "test" for Test
-import "lib:encodings:json" for JSON
-import "lib:io:fs" for Fs
+import "lib/encodings/json" for JSON
+import "lib/io/fs" for Fs
 import "gg" for GG
 
 var TestSuiteDir = Fs.join(GG.scriptDir, "tests/JSONTestSuite/test_parsing")

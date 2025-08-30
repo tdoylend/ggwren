@@ -1,6 +1,6 @@
 *.swp
 *.swo
 ggwren
-ext/*
+dependencies/*
 test/tests/JSONTestSuite
 

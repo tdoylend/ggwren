@@ -22,6 +22,6 @@ the speed of your machine.
 
 The JSON decoding test is designed to integrate with Nicolas Seriot's
 excellent JSON test suite, but it is not included by default; you can run
-"cd test/tests && git clone https://github.com/nst/JSONTestSuite.git" to
+`cd test/tests && git clone https://github.com/nst/JSONTestSuite.git` to
 collect it. If it is not available, that part of the suite will simply be
 skipped and a warning message generated.

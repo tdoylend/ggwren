@@ -1,10 +1,10 @@
 import "gg" for GG
-import "lib:io:stream" for Stream
+import "lib/io/stream" for Stream
 
-GG.bind("gg_stdlib")
+GG.bind("builtins")
 
-// A ByteBuffer is essentially a modifiable string.
-foreign class ByteBuffer is Stream {
+// A Buffer is essentially a modifiable string.
+foreign class Buffer is Stream {
     // Create an empty buffer.
     construct new() {}
 
@@ -29,7 +29,7 @@ foreign class ByteBuffer is Stream {
     foreign size
 
     // Clip the buffer down to `count` bytes.
-    foreign truncate(count)
+    foreign truncate(size)
 
     // Clear the buffer. Equivalent to truncate(0).
     foreign clear()
