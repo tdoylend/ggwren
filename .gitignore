@@ -1,5 +1,7 @@
 *.swp
 *.swo
+*.so
+*.dll
 ggwren
 dependencies/*
 test/tests/JSONTestSuite
