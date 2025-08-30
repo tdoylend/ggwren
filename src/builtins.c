@@ -422,7 +422,7 @@ void api_File_close_0(WrenVM *vm) {
         wrenSetSlotString(vm, 0, "The file has already been closed.");
         wrenAbortFiber(vm, 0);
     }
-    
+    file->fd = -1;
 }
 
 void apiStatic_Fs_pathSep_getter(WrenVM *vm) {
