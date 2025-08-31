@@ -1,6 +1,28 @@
-// GGWren
-// Copyright 2025 Thomas Doylend. All rights reserved.
-// For licensing information, please view the LICENSE.txt file.
+/*
+* GGWren
+* Copyright (C) 2025 Thomas Doylend
+* 
+* This software is provided ‘as-is’, without any express or implied
+* warranty. In no event will the authors be held liable for any damages
+* arising from the use of this software.
+* 
+* Permission is granted to anyone to use this software for any purpose,
+* including commercial applications, and to alter it and redistribute it
+* freely, subject to the following restrictions:
+* 
+* 1. The origin of this software must not be misrepresented; you must not
+*    claim that you wrote the original software. If you use this software
+*    in a product, an acknowledgment in the product documentation would be
+*    appreciated but is not required.
+* 
+* 2. Altered source versions must be plainly marked as such, and must not be
+*    misrepresented as being the original software.
+* 
+* 3. This notice may not be removed or altered from any source
+*    distribution.
+*/
+
+/**************************************************************************************************/
 
 #include <errno.h>
 #include <stdint.h>
@@ -13,7 +35,10 @@
 #ifdef __linux__
 #include <dirent.h>
 #include <fcntl.h>
+#include <netdb.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 extern char **environ;
@@ -271,6 +296,11 @@ void apiStatic_Process_arguments_getter(WrenVM *vm) {
         wrenSetSlotString(vm, 1, scriptArgv[i]);
         wrenInsertInList(vm, 0, -1, 1);
     }
+}
+
+static
+void apiStatic_Process_exit_1(WrenVM* vm) {
+    exit((int)wrenGetSlotDouble(vm,1));
 }
 
 typedef struct File File;
@@ -583,6 +613,137 @@ void apiStatic_Time_hpc_getter(WrenVM* vm) {
 void apiStatic_Time_hpcResolution_getter(WrenVM* vm) {
     wrenSetSlotDouble(vm, 0, 100000000.0f);
 }
+void apiAllocate_TcpListener(WrenVM* vm) {
+    bool ok = true;
+    int gaiResult = 0;
+    int* listener = wrenSetSlotNewForeign(vm, 0, 0, sizeof(int));
+    struct addrinfo *res = NULL;
+    *listener = socket(AF_INET, SOCK_STREAM, 0);
+    if (listener < 0) ok = false;
+    if (ok) {
+        int enable = 1;
+        (void)setsockopt(*listener, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int));
+        (void)setsockopt(*listener, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(int));
+    }
+    if (ok) {
+        struct addrinfo hints;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        hints.ai_protocol = 0;
+        gaiResult = getaddrinfo(wrenGetSlotString(vm, 1), wrenGetSlotString(vm, 2), &hints, &res);
+        if (gaiResult != 0) {
+            ok = false;
+        }
+    }
+    if (ok) {
+        if (bind(*listener, res->ai_addr, res->ai_addrlen) < 0) {
+            ok = false;
+        }
+    }
+    if (ok) {
+        if (listen(*listener, 10)) ok = false;
+    }
+    if (res) freeaddrinfo(res);
+    if (!ok) {
+        if (gaiResult) {
+            wrenSetSlotString(vm, 0, gai_strerror(gaiResult));
+            wrenAbortFiber(vm, 0);
+        } else {
+            abortErrno(vm, errno);
+        }
+        if (*listener >= 0) (void)close(*listener);
+    }
+}
+
+void apiFinalize_socket(void* data) {
+    int* sock = data;
+    if (*sock >= 0) {
+        (void)close(*sock);
+    }
+}
+
+void api_socket_blocking_getter(WrenVM* vm) {
+    int* sock = wrenGetSlotForeign(vm, 0);
+    int flags = fcntl(*sock, F_GETFL, 0);
+    if (flags < 0) {
+        abortErrno(vm, errno);
+    } else {
+        wrenSetSlotBool(vm, 0, !(flags & O_NONBLOCK));
+    }
+}
+
+void api_socket_blocking_setter(WrenVM* vm) {
+    int* sock = wrenGetSlotForeign(vm, 0);
+    int flags = fcntl(*sock, F_GETFL, 0);
+    if (flags < 0) {
+        abortErrno(vm, errno);
+    } else {
+        bool blocking = wrenGetSlotBool(vm, 1);
+        flags = blocking ? flags & ~O_NONBLOCK : flags | O_NONBLOCK;
+        if (fcntl(*sock, F_SETFL, flags) < 0) {
+            abortErrno(vm, errno);
+        }
+    }
+}
+
+void api_socket_close_0(WrenVM *vm) {
+    int* sock = wrenGetSlotForeign(vm, 0);
+    if (*sock >= 0) {
+        close(*sock);
+        *sock = -1;
+    } else {
+        wrenSetSlotString(vm, 0, "Socket has already been closed.");
+        wrenAbortFiber(vm, 0);
+    }
+}
+
+void apiAllocate_TcpStream(WrenVM* vm) {
+    int* sock = wrenSetSlotNewForeign(vm, 0, 0, sizeof(int));
+
+    /*@todo*/
+}
+
+void apiStatic_TcpStream_acceptFrom__1(WrenVM* vm) {
+    int* listener = wrenGetSlotForeign(vm, 1);
+    int clientFd = accept(*listener, NULL, NULL);
+    if (clientFd >= 0) {
+        int* client = wrenSetSlotNewForeign(vm, 0, 0, sizeof(int));
+        *client = clientFd;
+    } else if ((errno == EWOULDBLOCK) || (errno == EAGAIN)) {
+        wrenSetSlotNull(vm, 0);
+    } else {
+        abortErrno(vm, errno);
+    }
+}
+
+void api_TcpStream_read_1(WrenVM* vm) {
+    int* sock = wrenGetSlotForeign(vm, 0);
+    size_t count = (size_t)wrenGetSlotDouble(vm, 1);
+    char buf[count];
+    ssize_t bytes_read = read(*sock, buf, count);
+    if (bytes_read >= 0) {
+        wrenSetSlotBytes(vm, 0, buf, bytes_read);
+    } else if ((errno == EWOULDBLOCK) || (errno == EAGAIN)) {
+        wrenSetSlotNull(vm, 0);
+    } else {
+        abortErrno(vm, errno);
+    }
+}
+
+void api_TcpStream_write_1(WrenVM* vm) {
+    int* sock = wrenGetSlotForeign(vm, 0);
+    int count;
+    const char* bytes = wrenGetSlotBytes(vm, 1, &count);
+    ssize_t bytes_written = write(*sock, bytes, count);
+    if (bytes_written >= 0) {
+        wrenSetSlotDouble(vm, 0, (double)bytes_written);
+    } else if ((errno == EWOULDBLOCK) || (errno == EAGAIN)) {
+        wrenSetSlotNull(vm, 0);
+    } else {
+        abortErrno(vm, errno);
+    }
+}
 
 void initBuiltins(void) {
     ggRegisterClass("Buffer", &apiAllocate_Buffer, &apiFinalize_Buffer);
@@ -604,8 +765,9 @@ void initBuiltins(void) {
     ggRegisterMethod("Environ", "keyAt_(_)", &api_Environ_keyAt_1);
     ggRegisterMethod("Environ", "valueAt_(_)", &api_Environ_valueAt_1);
 
-    ggRegisterMethod("Process", "static arguments",
-            &apiStatic_Process_arguments_getter);
+    ggRegisterMethod("Process", "static arguments", &apiStatic_Process_arguments_getter);
+    ggRegisterMethod("Process", "static exit(_)", &apiStatic_Process_exit_1);
+
 
     ggRegisterClass("File", &apiAllocate_File, &apiFinalize_File);
     ggRegisterMethod("File", "size", &api_File_size_getter);
@@ -630,4 +792,17 @@ void initBuiltins(void) {
     ggRegisterMethod("Time", "static sleep(_)", &apiStatic_Time_sleep_1);
     ggRegisterMethod("Time", "static hpc", &apiStatic_Time_hpc_getter);
     ggRegisterMethod("Time", "static hpcResolution", &apiStatic_Time_hpcResolution_getter);
+
+    ggRegisterClass("TcpListener", &apiAllocate_TcpListener, &apiFinalize_socket);
+    ggRegisterMethod("TcpListener", "blocking", &api_socket_blocking_getter);
+    ggRegisterMethod("TcpListener", "blocking=(_)", &api_socket_blocking_setter);
+    ggRegisterMethod("TcpListener", "close()", &api_socket_close_0);
+
+    ggRegisterClass("TcpStream", &apiAllocate_TcpStream, &apiFinalize_socket);
+    ggRegisterMethod("TcpStream", "static acceptFrom_(_)", &apiStatic_TcpStream_acceptFrom__1);
+    ggRegisterMethod("TcpStream", "blocking", &api_socket_blocking_getter);
+    ggRegisterMethod("TcpStream", "blocking=(_)", &api_socket_blocking_setter);
+    ggRegisterMethod("TcpStream", "close()", &api_socket_close_0);
+    ggRegisterMethod("TcpStream", "read(_)", &api_TcpStream_read_1);
+    ggRegisterMethod("TcpStream", "write(_)", &api_TcpStream_write_1);
 }
