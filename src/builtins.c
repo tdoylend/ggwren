@@ -704,6 +704,41 @@ void apiAllocate_TcpStream(WrenVM* vm) {
     /*@todo*/
 }
 
+void api_TcpStream_peerAddress_getter(WrenVM* vm) {
+    int* sock = wrenGetSlotForeign(vm, 0);
+    struct sockaddr_storage addr;
+    socklen_t addrlen = sizeof(addr);
+    char host[512];
+    char port[64];
+    int gniResult = 0;
+    if (getpeername(*sock, (struct sockaddr*)(&addr), &addrlen) < 0) {
+        abortErrno(vm, errno);
+    } else if (gniResult = getnameinfo((struct sockaddr*)(&addr), addrlen, host, 512, port,
+            64, NI_NUMERICHOST)) {
+        wrenSetSlotString(vm, 0, gai_strerror(gniResult));
+        wrenAbortFiber(vm, 0);
+    } else {
+        wrenSetSlotString(vm, 0, host);
+    }
+}
+
+void api_TcpStream_peerPort_getter(WrenVM* vm) {
+    int* sock = wrenGetSlotForeign(vm, 0);
+    struct sockaddr addr;
+    socklen_t addrlen = sizeof(addr);
+    char host[512];
+    char port[64];
+    int gniResult = 0;
+    if (getpeername(*sock, &addr, &addrlen) < 0) {
+        abortErrno(vm, errno);
+    } else if (gniResult = getnameinfo(&addr, addrlen, host, 512, port, 64, NI_NUMERICHOST)) {
+        wrenSetSlotString(vm, 0, gai_strerror(gniResult));
+        wrenAbortFiber(vm, 0);
+    } else {
+        wrenSetSlotString(vm, 0, port);
+    }
+}
+
 void apiStatic_TcpStream_acceptFrom__1(WrenVM* vm) {
     int* listener = wrenGetSlotForeign(vm, 1);
     int clientFd = accept(*listener, NULL, NULL);
@@ -743,6 +778,20 @@ void api_TcpStream_write_1(WrenVM* vm) {
     } else {
         abortErrno(vm, errno);
     }
+}
+
+void apiStatic_Deque_fastCopy__4(WrenVM *vm) {
+    // list, destStart, sourceStart, count
+    // Moves count items from [sourceStart...sourceStart+count] to [destStart...destStart+count].
+    // The items are assumed to be non-overlapping.
+    size_t dest = (size_t)wrenGetSlotDouble(vm, 2);
+    size_t src = (size_t)wrenGetSlotDouble(vm, 3);
+    size_t count = (size_t)wrenGetSlotDouble(vm, 4);
+    for (size_t i = 0; i < count; i ++) {
+        wrenGetListElement(vm, 1, src + i, 4);
+        wrenSetListElement(vm, 1, dest + i, 4);
+    }
+    wrenSetSlotNull(vm, 0);
 }
 
 void initBuiltins(void) {
@@ -804,5 +853,9 @@ void initBuiltins(void) {
     ggRegisterMethod("TcpStream", "blocking=(_)", &api_socket_blocking_setter);
     ggRegisterMethod("TcpStream", "close()", &api_socket_close_0);
     ggRegisterMethod("TcpStream", "read(_)", &api_TcpStream_read_1);
+    ggRegisterMethod("TcpStream", "peerAddress", &api_TcpStream_peerAddress_getter);
+    ggRegisterMethod("TcpStream", "peerPort", &api_TcpStream_peerPort_getter);
     ggRegisterMethod("TcpStream", "write(_)", &api_TcpStream_write_1);
+
+    ggRegisterMethod("Deque", "static fastCopy_(_,_,_,_)", &apiStatic_Deque_fastCopy__4);
 }

@@ -31,14 +31,14 @@ GG.bind("builtins")
 
 foreign class TcpStream is Stream {
     // Instantiate a client socket connected to a remote address.
-    construct connect(peer) { }
+    // construct connect(peer) { } @todo
 
     foreign static acceptFrom_(listener)
 
     // Get the address of whatever is connected to the other end of
     // the socket.
-    // foreign peerAddress @todo
-    // foreign peerPort
+    foreign peerAddress
+    foreign peerPort
 
     // Set or get the blocking status of the socket.
     foreign blocking

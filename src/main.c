@@ -449,7 +449,12 @@ WrenForeignClassMethods apiConfig_bindForeignClass(
     const char* name
 ) {
     WrenForeignClassMethods result = {0};
-    if (boundExtension) {
+
+    if (strcmp(module, "meta") == 0) {
+        // do nothing
+    } else if (strcmp(module, "random") == 0) {
+        // do nothing
+    } else if (boundExtension) {
         for (ExtClass *class=boundExtension->classes; !result.allocate && class;class=class->next) {
             if (strcmp(class->name, name) == 0) {
                 result.allocate = class->allocate;
@@ -467,8 +472,6 @@ WrenForeignClassMethods apiConfig_bindForeignClass(
                 "calling GG.bind(..).\n", module, name);
         exit(EXITCODE_COULD_NOT_BIND_FOREIGN_CLASS);
     }
-    return result;
-
     return result;
 }
 
