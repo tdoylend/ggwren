@@ -285,6 +285,7 @@ class JSON {
                 } else {
                     stream.expect(",")
                 }
+                result[key] = value
             }
         }
         return result
