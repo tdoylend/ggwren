@@ -54,7 +54,8 @@ foreign class Buffer is Stream {
     // Get the number of bytes stored in the buffer.
     foreign size
 
-    // Clip the buffer down to `count` bytes.
+    // Clip the buffer down to `count` bytes. Returns the part removed, or null if the
+    // buffer was shorter than `count` bytes (returns "" if they were equal.)
     foreign truncate(size)
 
     // Clear the buffer. Equivalent to truncate(0).

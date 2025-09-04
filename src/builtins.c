@@ -122,8 +122,12 @@ static void api_Buffer_truncate_1(WrenVM *vm) {
     Buffer *buffer = wrenGetSlotForeign(vm, 0);
     if (wrenGetSlotType(vm, 1) == WREN_TYPE_NUM) {
         size_t count = (size_t)wrenGetSlotDouble(vm, 1);
-        if (count < buffer->count) buffer->count = count;
-        wrenSetSlotNull(vm, 0);
+        if (count <= buffer->count) {
+            wrenSetSlotBytes(vm, 0, &buffer->bytes[count], buffer->count - count);
+            buffer->count = count;
+        } else {
+            wrenSetSlotNull(vm, 0);
+        }
     } else {
         wrenSetSlotString(vm, 0, "The parameter to truncate(_) must be a Num.");
     }
@@ -591,7 +595,7 @@ void apiStatic_Time_now_getter(WrenVM* vm) {
 }
 
 void apiStatic_Time_sleep_1(WrenVM* vm) {
-    usleep((uint64_t)(wrenGetSlotDouble(vm, 1) * 0.000000001));
+    usleep((uint64_t)(wrenGetSlotDouble(vm, 1) * 1000000.0));
     wrenSetSlotNull(vm, 0);
 }
 
@@ -698,6 +702,11 @@ void api_socket_close_0(WrenVM *vm) {
     }
 }
 
+void api_socket_isOpen_getter(WrenVM* vm) {
+    int* sock = wrenGetSlotForeign(vm, 0);
+    wrenSetSlotBool(vm, 0, *sock >= 0);
+}
+
 void apiAllocate_TcpStream(WrenVM* vm) {
     int* sock = wrenSetSlotNewForeign(vm, 0, 0, sizeof(int));
 
@@ -794,6 +803,20 @@ void apiStatic_Deque_fastCopy__4(WrenVM *vm) {
     wrenSetSlotNull(vm, 0);
 }
 
+void apiStatic_Term_prompt_0(WrenVM* vm) {
+    char* result = NULL;
+    size_t n = 0;
+    ssize_t length = getline(&result, &n, stdin);
+    if (length < 0) {
+        abortErrno(vm, errno);
+    } else {
+        if (length && (result[length - 1] == '\n')) length --;
+        if (length && (result[length - 1] == '\r')) length --;
+        wrenSetSlotBytes(vm, 0, result, length);
+    }
+    free(result);
+}
+
 void initBuiltins(void) {
     ggRegisterClass("Buffer", &apiAllocate_Buffer, &apiFinalize_Buffer);
     ggRegisterMethod("Buffer", "write(_)", &api_Buffer_write_1);
@@ -846,6 +869,7 @@ void initBuiltins(void) {
     ggRegisterMethod("TcpListener", "blocking", &api_socket_blocking_getter);
     ggRegisterMethod("TcpListener", "blocking=(_)", &api_socket_blocking_setter);
     ggRegisterMethod("TcpListener", "close()", &api_socket_close_0);
+    ggRegisterMethod("TcpListener", "isOpen", &api_socket_isOpen_getter);
 
     ggRegisterClass("TcpStream", &apiAllocate_TcpStream, &apiFinalize_socket);
     ggRegisterMethod("TcpStream", "static acceptFrom_(_)", &apiStatic_TcpStream_acceptFrom__1);
@@ -858,4 +882,5 @@ void initBuiltins(void) {
     ggRegisterMethod("TcpStream", "write(_)", &api_TcpStream_write_1);
 
     ggRegisterMethod("Deque", "static fastCopy_(_,_,_,_)", &apiStatic_Deque_fastCopy__4);
+    ggRegisterMethod("Term", "static prompt()", &apiStatic_Term_prompt_0);
 }
