@@ -26,6 +26,8 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define GG_EXT_IMPLEMENTATION
 #include <ggwren.h>
@@ -33,8 +35,13 @@
 #include <sqlite3.h>
 
 void abortSqlite(WrenVM* vm, sqlite3* db) {
-    wrenSetSlotString(vm, 0, sqlite3_errmsg(db));
+    const char* sqliteError = sqlite3_errmsg(db);
+    char* buffer = malloc(128 + strlen(sqliteError));
+    strcpy(buffer, "[SQLite3 error] ");
+    strcat(buffer, sqliteError);
+    wrenSetSlotString(vm, 0, buffer);
     wrenAbortFiber(vm, 0);
+    free(buffer);
 }
 
 void apiAllocate_SQLite3(WrenVM* vm) {
@@ -49,6 +56,25 @@ void apiAllocate_SQLite3(WrenVM* vm) {
 void apiFinalize_SQLite3(void* data) {
     sqlite3* db = *(sqlite3**)(data);
     (void)sqlite3_close_v2(db);
+}
+
+void api_SQLite3_executeScript_1(WrenVM* vm) {
+    sqlite3* db = *(sqlite3**)wrenGetSlotForeign(vm, 0);
+    const char* script = wrenGetSlotString(vm, 1);
+    char* errorMessage;
+    (void)sqlite3_exec(db, script, NULL, NULL, &errorMessage);
+    
+    if (errorMessage) {
+        char* buffer = malloc(128 + strlen(errorMessage));
+        strcpy(buffer, "[SQLite3 error] ");
+        strcat(buffer, errorMessage);
+        wrenSetSlotString(vm, 0, buffer);
+        wrenAbortFiber(vm, 0);
+        free(buffer);
+        sqlite3_free(errorMessage);
+    } else {
+        wrenSetSlotNull(vm, 0);
+    }
 }
 
 void api_SQLite3_close_0(WrenVM* vm) {
@@ -199,6 +225,7 @@ void api_Statement_reset_0(WrenVM* vm) {
 
 void ggExt_init(void) {
     ggRegisterClass("SQLite3", &apiAllocate_SQLite3, apiFinalize_SQLite3);
+    ggRegisterMethod("SQLite3", "executeScript(_)", &api_SQLite3_executeScript_1);
     ggRegisterMethod("SQLite3", "close()", &api_SQLite3_close_0);
     
     ggRegisterClass("Statement", &apiAllocate_Statement, &apiFinalize_Statement);
