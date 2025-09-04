@@ -15,7 +15,6 @@ Adds a small standard library to Wren. The following modules are available:
 Coming soon:
 
  -  HTTP server + client libraries
- -  Mustache template rendering
  -  SDL2
  -  OpenGL
 

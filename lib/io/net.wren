@@ -58,6 +58,8 @@ foreign class TcpStream is Stream {
     // not already occurred.
     foreign close()
 
+    foreign isOpen
+
     // Shut down one or both sides of the socket. `mode` must be either
     // "r", "w", or "rw" to shut down the read, write, or both sides of
     // the socket, respectively. Attempts to use the shut-down side of
