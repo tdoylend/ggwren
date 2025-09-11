@@ -24,30 +24,53 @@
 
 /**************************************************************************************************/
 
-// Comphrehensive flag list:
-//
-// z - Wizard
-// w - World-writable
-// r - World-readable
-// x - World-executable
-// p - player
-// g - generic
-// G - guest
-// A - active
-
-if (Fiber.new{ 
-    import "gg"
-}.try() is String) {
-    System.print("This Wren program must be run within GGWren.")
-    System.print()
-    System.print("https://github.com/tdoylend/ggwren/")
-    return
-}
-
 import "log" for Log
-import "game" for Game
 import "config" for Config
 
-Log.announce("WrenMOO v%(Config.version)")
+class Task {
+    construct start() {
+        if (Object.same(this.type, Task)) {
+            Fiber.abort("Cannot instantiate Task directly.")
+        }
 
-Game.play()
+        _id = (__idCounter || 0) + 1
+        __idCounter = _id
+        
+        Task.queue.add(this)
+
+        _name = "unnamed task (%(_id))"
+        _fiber = Fiber.new{ this.run() }
+        _isBusy = false
+        _isDone = false
+    }
+
+    cleanUp() {}
+
+    name { _name }
+    name=(value) { _name=(value) }
+    fiber { _fiber }
+
+    isBusy { _isBusy }
+    isBusy=(value) { _isBusy = value }
+
+    isDone { _isDone || _fiber.isDone }
+
+    static queue { __queue = __queue || [] }
+
+    finish() {
+        _isDone = true
+        Log.info("[%(name)] Task finished.")
+    }
+
+    resume() {
+        if (Config.debugMode) {
+            _fiber.call()
+        } else {
+            _fiber.try()
+        }
+    }
+
+    run() {
+        Fiber.abort("Cannot call run(..) on abstract Task; must call on a subclass.")
+    }
+}

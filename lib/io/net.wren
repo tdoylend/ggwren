@@ -70,6 +70,8 @@ foreign class TcpStream is Stream {
 foreign class TcpListener {
     construct bind(address, port) { }
 
+    foreign isOpen
+
     foreign blocking
     foreign blocking=(enabled)
 

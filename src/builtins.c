@@ -880,6 +880,7 @@ void initBuiltins(void) {
     ggRegisterMethod("TcpStream", "peerAddress", &api_TcpStream_peerAddress_getter);
     ggRegisterMethod("TcpStream", "peerPort", &api_TcpStream_peerPort_getter);
     ggRegisterMethod("TcpStream", "write(_)", &api_TcpStream_write_1);
+    ggRegisterMethod("TcpStream", "isOpen", &api_socket_isOpen_getter);
 
     ggRegisterMethod("Deque", "static fastCopy_(_,_,_,_)", &apiStatic_Deque_fastCopy__4);
     ggRegisterMethod("Term", "static prompt()", &apiStatic_Term_prompt_0);
