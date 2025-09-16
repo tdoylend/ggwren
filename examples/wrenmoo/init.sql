@@ -43,12 +43,19 @@ INSERT INTO Object(id, name, flags, owner, parent, location) VALUES (5, 'item', 
 
 INSERT INTO Object(id, name, flags, owner, parent, location) VALUES (10, 'Green Room', '', 0, 3, 0);
 
-INSERT INTO Object(name, flags, owner, parent, location) VALUES ('Guest_Cedar', 'G', 0, 2, 0);
-INSERT INTO Object(name, flags, owner, parent, location) VALUES ('Guest_Redwood', 'G', 0, 2, 0);
-INSERT INTO Object(name, flags, owner, parent, location) VALUES ('Guest_Spruce', 'G', 0, 2, 0);
-INSERT INTO Object(name, flags, owner, parent, location) VALUES ('Guest_Pine', 'G', 0, 2, 0);
-INSERT INTO Object(name, flags, owner, parent, location) VALUES ('Guest_Cherry', 'G', 0, 2, 0);
-INSERT INTO Object(name, flags, owner, parent, location) VALUES ('Guest_Rowan', 'G', 0, 2, 0);
+INSERT INTO Object(id, name, flags, owner, parent, location) VALUES (11, 'user', 'Gp', 0, 2, 10);
+
+INSERT INTO Object(name, flags, owner, parent, location) VALUES ('Guest_Cedar', 'Gp', 0, 2, 10);
+INSERT INTO Object(name, flags, owner, parent, location) VALUES ('Guest_Redwood', 'Gp', 0, 2, 10);
+INSERT INTO Object(name, flags, owner, parent, location) VALUES ('Guest_Spruce', 'Gp', 0, 2, 10);
+INSERT INTO Object(name, flags, owner, parent, location) VALUES ('Guest_Pine', 'Gp', 0, 2, 10);
+INSERT INTO Object(name, flags, owner, parent, location) VALUES ('Guest_Cherry', 'Gp', 0, 2, 10);
+INSERT INTO Object(name, flags, owner, parent, location) VALUES ('Guest_Rowan', 'Gp', 0, 2, 10);
+INSERT INTO Object(name, flags, owner, parent, location) VALUES ('Guest_Rowan', 'Gp', 0, 2, 10);
+
+INSERT INTO Property(object, name, value, flags) VALUES (11, 'password', 'plaintext:password', '');
+
+--INSERT INTO Verb(object, name, source) VALUES (2, 'hear', 'PARAMETER message' || char(10) || 'RESPOND message')
 
 INSERT INTO Property(object, name, value, flags) VALUES (10, 'description',
 'Brightly lit with overhead fluorescence, the Green Room has the slight chill of industrial ' ||

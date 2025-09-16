@@ -44,6 +44,18 @@ if (Fiber.new{
     return
 }
 
+class Blank {}
+if (Fiber.new{
+    import "meta" for Meta
+    Meta.extend(Blank, Blank, [])
+}.try() is String) {
+    System.print("This Wren program requires the tdoylend fork of Wren.")
+    System.print()
+    System.print("https://github.com/tdoylend/wren/")
+}
+
+import "lib/util_mixins" /* VERY MAGIC */
+
 import "log" for Log
 import "game" for Game
 import "config" for Config

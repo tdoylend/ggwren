@@ -1,4 +1,10 @@
+import "lib/string" for StringUtil as S
 import "lib/buffer" for Buffer
+
+var Plurals = {
+    "is": "are",
+    "was": "were"
+}
 
 var ColorSequences = {
 //          None   ANSI         True
@@ -82,5 +88,27 @@ class Fmt {
             }
         }
         return out.toString + ColorSequences["end of message"][colorModeIndex] + "\r\n"
+    }
+
+
+    static pl(word, count) {
+        if (count == 1) {
+            return word
+        } else {
+            var lower = S.asciiLower(word)
+            if (Plurals.contains(lower)) {
+                var plural = Plurals[lower]
+                if (S.asciiLower(word[0]) == word[0]) {
+                    return plural
+                } else {
+                    return S.asciiUpper(plural[0]) + plural[1...plural.bytes.count]
+                }
+            } else if (word.endsWith("x") || word.endswith("s")) {
+                return word + "es"
+            } else {
+                return word + "s"
+            }
+        }
+        
     }
 }

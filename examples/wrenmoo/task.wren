@@ -60,6 +60,7 @@ class Task {
     finish() {
         _isDone = true
         Log.info("[%(name)] Task finished.")
+        Fiber.yield()
     }
 
     resume() {

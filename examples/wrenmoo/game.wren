@@ -28,9 +28,34 @@ import "lib/time" for Time
 
 import "config" for Config
 import "task" for Task
-import "world" for World
 import "log" for Log
 import "tasks/listen" for ListenTask
+import "lib/buffer" for Buffer
+
+import "meta" for Meta
+
+var WhitespaceBytes = [32,10,13,9]
+
+class StringUtil {
+    squish {
+        var output = Buffer.new()
+        var lastWasWhitespace = false
+        for (byte in this.bytes) {
+            if (WhitespaceBytes.contains(byte)) {
+                if (!lastWasWhitespace) {
+                    lastWasWhitespace = true
+                    output.writeByte(32)
+                }
+            } else {
+                lastWasWhitespace = false
+                output.writeByte(byte)
+            }
+        }
+        return output.read().trim()
+    }
+}
+
+Meta.extend(String, StringUtil, ["squish"])
 
 class Game {
     static running { __running }
@@ -39,7 +64,6 @@ class Game {
     static queue { Task.queue }
 
     static play() {
-        World.open(Config.dbPath)
         ListenTask.start(Config.host, Config.port)
         running = true
         Log.info("Running.")

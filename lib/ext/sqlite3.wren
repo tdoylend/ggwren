@@ -73,7 +73,13 @@ class QueryResult is Sequence {
         _statement = statement
         _query = query
         _row = Rows[query]
-        if (_row == null) initRowFromStatement_()
+        if (_row == null) {
+            if (_statement.columnCount == 1) {
+                _row = Fn.new{|statement| statement.column(0) }
+            } else {
+                initRowFromStatement_()
+            }
+        }
         _first = step()
         _current = first
         _iterateAvailable = true
@@ -83,7 +89,11 @@ class QueryResult is Sequence {
 
     step() {
         if (_statement.step()) {
-            _current = _row.new(_statement)
+            if (_row is Fn) {
+                _current = _row.call(_statement)
+            } else {
+                _current = _row.new(_statement)
+            }
         } else {
             _current = null
         }
