@@ -134,7 +134,7 @@ void printfBuffer(Buffer *buffer, const char *format, ...);
 void finishBuffer(Buffer *buffer);
 
 char* readEntireFile(const char* path, size_t* length);
-char* asprintf(const char* format, ...);
+char* xsprintf(const char* format, ...);
 static inline char *dupString(const char *string);
 size_t nextPowerOfTwo(size_t x);
 void addModuleSearchPath(const char *path);
@@ -173,7 +173,7 @@ GG_ABI abi = {
 
 // Function implementations
 ExtHandle openExt(const char *name) {
-    char* extPath = asprintf("%s/bin/%s.ggwren.so", binDir, name);
+    char* extPath = xsprintf("%s/bin/%s.ggwren.so", binDir, name);
     ExtHandle handle = dlopen(extPath, RTLD_NOW | RTLD_LOCAL);
     free(extPath);
     if (!handle) extError = dlerror();
@@ -295,7 +295,7 @@ char *readEntireFile(const char *path, size_t* size_ptr) {
     return ok ? buffer : NULL;
 }
 
-char* asprintf(const char *format, ...) {
+char* xsprintf(const char *format, ...) {
     va_list args1;
     va_list args2;
     va_start(args1, format);
