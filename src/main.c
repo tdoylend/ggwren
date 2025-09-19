@@ -77,6 +77,7 @@
 "    foreign static bind(extension)"                                             "\n"              \
 "    foreign static scriptDir"                                                   "\n"              \
 "    foreign static scriptPath"                                                  "\n"              \
+"    foreign static error"                                                       "\n"              \
 "}"                                                                              "\n"              \
 
 #define EXITCODE_OK /*..............................*/  0
@@ -131,6 +132,8 @@ struct Buffer {
 void pushBuffer(Buffer *buffer, const char *string);
 void pushBytesToBuffer(Buffer *buffer, const uint8_t *bytes, size_t length);
 void printfBuffer(Buffer *buffer, const char *format, ...);
+void clearBuffer(Buffer *buffer);
+void appendPrintfBuffer(Buffer *buffer, const char *format, ...);
 void finishBuffer(Buffer *buffer);
 
 char* readEntireFile(const char* path, size_t* length);
@@ -160,10 +163,13 @@ Ext* extBeingInitialized = NULL;
 Ext* boundExtension = NULL;
 WrenConfiguration config = {0};
 WrenVM* vm = NULL;
-int compilationErrorsShown = 0;
-int compilationErrorsHidden = 0;
 Buffer foreignMethodSignature = {0};
 Buffer modulePath = {0};
+
+int compilationErrorsShown = 0;
+int compilationErrorsHidden = 0;
+Buffer fullError = {0};
+bool errorSentinel = false;
 
 GG_ABI abi = {
     #define GG_ABI_ENTRY(returnType, name, signature, params) .name = &name,
@@ -239,6 +245,29 @@ void pushBytesToBuffer(Buffer *buffer, const uint8_t *bytes, size_t length) {
     memcpy(&buffer->bytes[buffer->count], bytes, length);
     buffer->count += length;
     buffer->bytes[buffer->count] = 0;
+}
+
+void clearBuffer(Buffer *buffer) {
+    if (buffer->bytes) buffer->bytes[0] = 0;
+    buffer->count = 0;
+}
+
+void appendPrintfBuffer(Buffer *buffer, const char *format, ...) {
+    va_list args1;
+    va_list args2;
+    va_start(args1, format);
+    va_copy(args2, args1);
+    char c[2];
+    size_t space_required = buffer->count + vsnprintf(c, 2, format, args1);
+    if ((space_required + 1) > buffer->capacity_including_nul) {
+        buffer->capacity_including_nul = space_required + 1;
+        buffer->capacity_including_nul = nextPowerOfTwo(buffer->capacity_including_nul);
+        buffer->bytes = realloc(buffer->bytes, buffer->capacity_including_nul);
+    }
+    buffer->count += vsnprintf(&buffer->bytes[buffer->count], space_required - buffer->count + 1,
+            format, args2);
+    va_end(args2);
+    va_end(args1);
 }
 
 void printfBuffer(Buffer *buffer, const char *format, ...) {
@@ -410,6 +439,10 @@ void apiStatic_GG_scriptDir_getter(WrenVM* vm) {
     wrenSetSlotString(vm, 0, scriptDir);
 }
 
+void apiStatic_GG_error_getter(WrenVM* vm) {
+    wrenSetSlotBytes(vm, 0, fullError.bytes, fullError.count);
+}
+
 void apiConfig_write(WrenVM* vm, const char* text) {
     printf("%s", text);
 }
@@ -421,24 +454,33 @@ void apiConfig_error(
     int line,
     const char* message
 ) {
+    if (errorSentinel) {
+        errorSentinel = false;
+        clearBuffer(&fullError);
+    }
     if ((type != WREN_ERROR_COMPILE) && (compilationErrorsHidden > 0)) {
-        fprintf(stderr, NOTE "(%d additional error%s not shown)\n", compilationErrorsHidden,
-                compilationErrorsHidden != 1 ? "s" : "");
+        appendPrintfBuffer(&fullError, NOTE "(%d additional error%s not shown)\n",
+                compilationErrorsHidden, compilationErrorsHidden != 1 ? "s" : "");
         compilationErrorsHidden = 0;
     }
     switch (type) {
         case WREN_ERROR_COMPILE: {
             if (compilationErrorsShown >= MAX_COMPILATION_ERRORS_SHOWN) {
             } else {
-                fprintf(stderr, ERROR "(In module `%s` on line %d) %s\n", module, line, message);
+                appendPrintfBuffer(&fullError,  ERROR "(In module `%s` on line %d) %s\n",
+                        module, line, message);
                 compilationErrorsShown ++;
             }
         } break;
         case WREN_ERROR_STACK_TRACE: {
-            fprintf(stderr, TRACE "In module `%s`, line %d, in `%s`\n", module, line, message);
+            appendPrintfBuffer(&fullError, TRACE "In module `%s`, line %d, in `%s`\n",
+                    module, line, message);
         } break;
         case WREN_ERROR_RUNTIME: {
-            fprintf(stderr, ERROR "%s\n", message);
+            appendPrintfBuffer(&fullError, ERROR "%s\n", message);
+        } break;
+        case WREN_ERROR_END_OF_FRAME: {
+            errorSentinel = true;
         } break;
     }
 }
@@ -491,6 +533,7 @@ WrenForeignMethodFn apiConfig_bindForeignMethod(
         else if (strcmp(signature, "bind(_)") == 0)      result = &apiStatic_GG_bind_1;
         else if (strcmp(signature, "scriptDir") == 0)    result = &apiStatic_GG_scriptDir_getter;
         else if (strcmp(signature, "scriptPath") == 0)   result = &apiStatic_GG_scriptPath_getter;
+        else if (strcmp(signature, "error") == 0)   result = &apiStatic_GG_error_getter;
         else {
             fprintf(stderr, "Internal error: gg declares non-existent method `%s`\n", signature);
             exit(EXITCODE_FATAL_ERROR);
@@ -708,6 +751,9 @@ int main(int argc_, char** argv_) {
                 scriptModuleName,
                 scriptSource
             );
+            if (result != WREN_RESULT_SUCCESS) {
+                fprintf(stderr, "%s", fullError.bytes);
+            }
             switch (result) {
                 case WREN_RESULT_SUCCESS: { status = OK; } break;
                 case WREN_RESULT_COMPILE_ERROR: { status = SCRIPT_COMPILATION_ERROR; } break;
