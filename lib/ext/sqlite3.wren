@@ -32,7 +32,7 @@
 // The SQLite3.sql(..) function performs a query and returns a QueryResult. This supports
 // all the usual Sequence operations, along with a .first method if you're only receiving
 // one row of data. Data is returned in Row classes which are custom-defined per-query to
-// have a getter for each column. These getters are the column names casted into Wren's
+// have a getter for each column. These getters are the column names cast into Wren's
 // dromedaryCase syntax; so for example:
 //
 //      SELECT first_name, last_name FROM Persons WHERE uid=?;
@@ -41,23 +41,32 @@
 // defined getters.
 //
 // Columns whose name is not expressible as a Wren identifier -- e.g. "COUNT(*)" -- and
-// columns whose name matches a previous column will be renamed using a mangled row*
-// identifier. You can either use AS to make sure you collect the right one, or you can
-// use [..] to get columns by their original names.
+// columns whose name matches a previous column will not have distinct getters. You can either
+// use AS to make sure you collect the right one, or you can use [..] to get columns by their
+// original names (or indices).
 //
 // As always, you are advised to familiarize yourself with the SQLite documentation.
 // https://sqlite.org/docs.html
 
 import "lib/buffer" for Buffer
 import "lib/string" for StringUtil as S
+import "lib/util_mixins"
 import "gg" for GG
 import "meta" for Meta
 
+var AlphaLower = "abcdefghijklmnopqrstuvwxyz"
+var AlphaUpper = AlphaLower.upper
+var Alpha = AlphaLower + AlphaUpper
+var IdentStart = AlphaLower
+var IdentAny = Alpha + "0123456789_"
+
 GG.bind("sqlite3")
+
+var StatementRowObjects = {}
 
 foreign class Statement {
     // This corresponds to a sqlite3_stmt in the underlying C layer.
-    construct prepare(db, statement) {}
+    construct prepare(db, text) {}
     foreign bind(index, value)
     foreign step()
     foreign column(index)
@@ -66,42 +75,77 @@ foreign class Statement {
     foreign reset()
 }
 
-var Rows = {}
-
-class QueryResult is Sequence {
-    construct new(query, statement) {
+class StatementResult is Sequence {
+    construct new(text, statement) {
         _statement = statement
-        _query = query
-        _row = Rows[query]
-        if (_row == null) {
-            if (_statement.columnCount == 1) {
-                _row = Fn.new{|statement| statement.column(0) }
-            } else {
-                initRowFromStatement_()
-            }
+        _text = text
+        _row = null
+        if (_statement.columnCount > 1) {
+            _row = StatementRowObjects[_text] || initRowFromStatement_()
         }
-        _first = step()
-        _current = first
-        _iterateAvailable = true
+        _stepCount = 0
+        _finished = false
+        _current = null
+
+        step()
+        _first = _current
     }
 
-    columnNames { (0..._statement.columnCount).map{|index| _statement.columnName(index) }.toList }
+    first { _first }
+    current { _current }
 
     step() {
         if (_statement.step()) {
-            if (_row is Fn) {
-                _current = _row.call(_statement)
+            _stepCount = _stepCount + 1
+            if (_statement.columnCount == 0) {
+                _current = null
+            } else if (_statement.columnCount == 1) {
+                _current = _statement.column(0)
             } else {
                 _current = _row.new(_statement)
             }
         } else {
             _current = null
         }
-        return _current
     }
 
-    static fixCase(name) {
-        // "Fix" a statement's case.
+    iterate(iterator) {
+        if (iterator== null) {
+            if (_stepCount == 0) {
+                return null
+            } else if (_stepCount == 1) {
+                return 1
+            } else {
+                Fiber.abort("You cannot iterate through an SQL query twice. Use .toList if you "+
+                        "wish to load all results into memory at once.")
+            }
+        } else {
+            if (iterator== _stepCount) {
+                step()
+                if (_stepCount > iterator) {
+                    return _stepCount
+                } else {
+                    return null
+                }
+            } else {
+                Fiber.abort("You cannot iterate through an SQL query twice. Use .toList if you "+
+                        "wish to load all results into memory at once.")
+            }
+        }
+    }
+
+    iteratorValue(iterator) {
+        if (iterator == _stepCount) {
+            return _current
+        } else {
+            Fiber.abort("You cannot iterate through an SQL query twice. Use .toList if you "+
+                    "wish to load all results into memory at once.")
+        }
+    }
+
+    columnNames { (0..._statement.columnCount).map{|index| _statement.columnName(index) }.toList }
+
+    toCamel(name) {
         var first = true
         if (!__buf) __buf = Buffer.new()
         __buf.clear()
@@ -121,52 +165,62 @@ class QueryResult is Sequence {
         return __buf.read()
     }
 
-    initRowFromStatement_() {
-        var columnCount = _statement.columnCount
-        var columnNames = (0...columnCount).
-                map{|index| QueryResult.fixCase(_statement.columnName(index)) }.toList
-
-        var columnInstantiators = (0...columnCount).
-                map{|index| "_%(columnNames[index]) = statement.column(%(index))"}.join("\n")
-
-        var columnGetters = (0...columnCount).
-                map{|index| "%(columnNames[index]) { _%(columnNames[index]) }"}.join("\n")
-
-        // System.print(columnNames)
-        // System.print(columnInstantiators)
-
-        var source = "
-            class Row_%(Rows.count) {
-                construct new(statement) {
-                    %(columnInstantiators)
-                }
-                %(columnGetters)
-            }
-            return Row_%(Rows.count)
-        "
-        _row = Meta.compile(source).call()
-        Rows[_query] = _row
-    }
-
-    first { _first }
-
-    iterate(iterator) {
-        if (iterator == null) {
-            iterator = _first || false
-            if (_iterateAvailable) {
-                _iterateAvailable = false
-            } else {
-                Fiber.abort("It is not possible to iterate twice over a QueryResult. Use .toList "+
-                        "if need all the data in memory at once.")
-            }
+    isValidIdentifier(name) {
+        if (name.count == 0) {
+            return false
         } else {
-            iterator = step() || false
+            if (IdentStart.contains(name[0])) {
+                for (char in name[1...name.bytes.count]) {
+                    if (!(IdentAny.contains(char))) return false
+                }
+                return true
+            } else {
+                return false
+            }
         }
-        return iterator
     }
 
-    iteratorValue(iterator) {
-        return iterator
+    initRowFromStatement_() {
+        var niceColumnIndices = {}
+        var rawColumnIndices = {}
+        for (column in 0..._statement.columnCount) {
+            rawColumnIndices[_statement.columnName(column)] = column
+        }
+        for (entry in rawColumnIndices) {
+            var camel = toCamel(entry.key)
+            if (isValidIdentifier(camel)) niceColumnIndices[camel] = entry.value
+        }
+        var rowSource = """
+        {
+            class Row {
+                static columnIndices=(value) { __columnIndices = value }
+                construct new(statement) {
+                    _cells = (0...statement.columnCount).map{|i| statement.column(i)}.toList
+                }
+
+                [index] { 
+                    if (index is Num) {
+                        return _cells[index]
+                    } else if (__columnIndices.containsKey(index)) {
+                        return _cells[__columnIndices[index]]
+                    } else {
+                        Fiber.abort("No such column: %(index)")
+                    }
+                }
+
+                $getters$
+            }
+            return Row
+        }
+        """.replace("$getters$", niceColumnIndices.toList
+                .map{|entry| "%(entry.key) { _cells[%(entry.value)] }" }.join("\n"))
+        
+        var row = Meta.compile(rowSource).call()
+        row.columnIndices = rawColumnIndices
+
+        StatementRowObjects[_text] = row
+        return row
+
     }
 }
 
@@ -178,14 +232,19 @@ foreign class SQLite3 {
 
     // Execute a query. Bindings should be a List of values to bind to the query.
     // The returned value is a QueryResult, which can be iterated over.
-    sql(query) { QueryResult.new(query, Statement.prepare(this, query)) }
-    sql(query, bindings) {
-        var statement = Statement.prepare(this, query)
-        for (index in 0...bindings.count) {
-            statement.bind(index + 1, bindings[index])
+    sql(text) { StatementResult.new(text, Statement.prepare(this, text)) }
+    sql(text, bindings) {
+        var statement = Statement.prepare( this, text)
+        if ((bindings is Sequence) && !(bindings is String)) {
+            bindings.each{ |elem, idx| statement.bind(idx + 1, elem) }
+        } else {
+            statement.bind(1, bindings)
         }
-        return QueryResult.new(query, statement)
+        return StatementResult.new(text, statement)
     }
+
+    [text] { sql(text) }
+    [text, bindings] { sql(text, bindings) }
 
     foreign executeScript(script)
 
