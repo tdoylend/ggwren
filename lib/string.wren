@@ -96,6 +96,42 @@ class StringUtil {
         return result.toString
     }
 
+    static asciiTitle(text) {
+        var result = Buffer.new()
+        var upper = true
+        for (char in text) {
+            if (upper) {
+                result.write(asciiUpper(char))
+            } else {
+                result.write(char)
+            }
+            if (isAlpha(char) || (char == "'")) {
+                upper = false
+            } else {
+                upper = true
+            }
+        }
+        return result.read()
+    }
+
+    static asciiCapitalize(text) {
+        var result = Buffer.new()
+        var upper = true
+        for (char in text) {
+            if (upper) {
+                result.write(asciiUpper(char))
+            } else {
+                result.write(char)
+            }
+            if (upper) {
+                if (isAlpha(char)) {
+                    upper = false
+                }
+            }
+        }
+        return result.read()
+    }
+
     static isAlpha(text) {
         return (text != "") && text.bytes.all{ |byte| ((byte >= 65) && (byte <= 90)) || 
                 ((byte >= 97) && (byte <= 122)) }

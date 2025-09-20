@@ -13,9 +13,11 @@ class StringMixins {
 
     upper { S.asciiUpper(this) }
     lower { S.asciiLower(this) }
+    title { S.asciiTitle(this) }
+    capitalize { S.asciiCapitalize(this) }
 }
 
-Meta.extend(String, StringMixins, ["upper", "lower", "find(_)"])
+Meta.extend(String, StringMixins, ["upper", "lower", "find(_)", "title", "capitalize"])
 
 class NumMixins {
     times(fn) {
