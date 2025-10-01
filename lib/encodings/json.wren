@@ -156,7 +156,7 @@ class JSON {
         } else if (data == null) {
             stream.write("null")
         } else {
-            stream.write(data.toJSON)
+            stream.write(data.encode)
         }
     }
 
