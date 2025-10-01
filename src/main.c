@@ -78,6 +78,7 @@
 "    foreign static scriptDir"                                                   "\n"              \
 "    foreign static scriptPath"                                                  "\n"              \
 "    foreign static error"                                                       "\n"              \
+"    foreign static setModuleSource(name, source)"                               "\n"              \
 "}"                                                                              "\n"              \
 
 #define EXITCODE_OK /*..............................*/  0
@@ -165,6 +166,9 @@ WrenConfiguration config = {0};
 WrenVM* vm = NULL;
 Buffer foreignMethodSignature = {0};
 Buffer modulePath = {0};
+
+char* preboundModuleName = NULL;
+char* preboundModuleSource = NULL;
 
 int compilationErrorsShown = 0;
 int compilationErrorsHidden = 0;
@@ -443,6 +447,14 @@ void apiStatic_GG_error_getter(WrenVM* vm) {
     wrenSetSlotBytes(vm, 0, fullError.bytes, fullError.count);
 }
 
+void apiStatic_GG_setModuleSource_2(WrenVM* vm) {
+    if (preboundModuleName) free(preboundModuleName);
+    if (preboundModuleSource) free(preboundModuleSource);
+    preboundModuleName = dupString(wrenGetSlotString(vm, 1));
+    preboundModuleSource = dupString(wrenGetSlotString(vm, 2));
+    wrenSetSlotNull(vm, 0);
+}
+
 void apiConfig_write(WrenVM* vm, const char* text) {
     printf("%s", text);
 }
@@ -533,6 +545,7 @@ WrenForeignMethodFn apiConfig_bindForeignMethod(
         else if (strcmp(signature, "bind(_)") == 0)      result = &apiStatic_GG_bind_1;
         else if (strcmp(signature, "scriptDir") == 0)    result = &apiStatic_GG_scriptDir_getter;
         else if (strcmp(signature, "scriptPath") == 0)   result = &apiStatic_GG_scriptPath_getter;
+        else if (strcmp(signature, "setModuleSource(_,_)") == 0) result = &apiStatic_GG_setModuleSource_2;
         else if (strcmp(signature, "error") == 0)   result = &apiStatic_GG_error_getter;
         else {
             fprintf(stderr, "Internal error: gg declares non-existent method `%s`\n", signature);
@@ -573,8 +586,11 @@ void apiConfig_loadModuleComplete(WrenVM* vm, const char* module, WrenLoadModule
 
 WrenLoadModuleResult apiConfig_loadModule(WrenVM* vm, const char* name) {
     WrenLoadModuleResult result = {0};
+    // @todo doesn't seem to set up loadModuleComplete?
     if (strcmp(name, "gg") == 0) {
         result.source = GG_SOURCE;
+    } else if (preboundModuleName && (strcmp(name, preboundModuleName) == 0)) {
+        result.source = preboundModuleSource;
     } else if (name[0] == '/') {
         // Forbid absolute pathnames. @todo make this do the right thing on Windows.
         result.source = NULL;
@@ -809,6 +825,8 @@ int main(int argc_, char** argv_) {
     if (scriptDir) free(scriptDir);
     finishBuffer(&foreignMethodSignature);
     finishBuffer(&modulePath);
+    if (preboundModuleName) free(preboundModuleName);
+    if (preboundModuleSource) free(preboundModuleSource);
     switch (status) {
         case OK:                            return scriptExitCode;
         case SCRIPT_RUNTIME_ERROR:          return EXITCODE_RUNTIME_ERROR;
