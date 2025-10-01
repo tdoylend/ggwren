@@ -595,9 +595,13 @@ WrenLoadModuleResult apiConfig_loadModule(WrenVM* vm, const char* name) {
         // Forbid absolute pathnames. @todo make this do the right thing on Windows.
         result.source = NULL;
     } else {
-        for (size_t i = 0; (result.source == NULL) && (i < moduleSearchPathCount); i ++) {
+        for (size_t i = 0; i < moduleSearchPathCount; i ++) {
             printfBuffer(&modulePath, "%s/%s.wren", moduleSearchPaths[i], name);
             result.source = readEntireFile(modulePath.bytes, NULL);
+            if (result.source) break;
+            printfBuffer(&modulePath, "%s/%s/lib.wren", moduleSearchPaths[i], name);
+            result.source = readEntireFile(modulePath.bytes, NULL);
+            if (result.source) break;
         }
     }
     return result;
