@@ -1,5 +1,3 @@
-
-import "gg" for GG
 /*
 * GGWren
 * Copyright (C) 2025 Thomas Doylend
@@ -25,6 +23,8 @@ import "gg" for GG
 */
 
 /**************************************************************************************************/
+
+import "gg" for GG
 
 GG.bind("builtins")
 
@@ -59,13 +59,6 @@ class Deque is Sequence {
     }
 
     foreign static fastCopy_(list, dest, src, count)
-    /*
-    static fastCopy_(list, destAddr, srcAddr, count) {
-        for (i in 0...count) {
-            list[destAddr + i] = list[srcAddr + i]
-        }
-    }
-    */
 
     addAll(sequence) {
         for (elem in sequence) {
@@ -132,6 +125,11 @@ class Heap is Sequence {
     construct new() {
         _key = Fn.new{|a, b| a <= b}
         _heap = []
+    }
+
+    top {
+        if (_heap.count == 0) Fiber.abort("Cannot view top of empty Heap.")
+        return _heap[0]
     }
 
     pop() {
