@@ -739,11 +739,36 @@ int main(int argc_, char** argv_) {
     }
     if (scriptDir) moduleSearchPaths[0] = dupString(scriptDir);
     if (binDir) addModuleSearchPath(binDir);
+    if (getenv("GG_LIB")) {
+        int start = 0;
+        char *lib = getenv("GG_LIB");
+        for (int index = 0; lib[index]; index ++) {
+            if (lib[index] == ':') {
+                int length = index - start;
+                if (length) {
+                    char* path = malloc(length + 1);
+                    memcpy(path, &lib[start], length);
+                    path[length] = 0;
+                    addModuleSearchPath(path);
+                    free(path);
+                }
+                start = index + 1;
+            }
+        }
+        int length = strlen(lib) - start;
+        if (length) {
+            char* path = malloc(length + 1);
+            memcpy(path, &lib[start], length);
+            path[length] = 0;
+            addModuleSearchPath(path);
+            free(path);
+        }
+    }
     addModuleSearchPath("/usr/lib/ggwren");
     if (tooManyModuleSearchPaths) {
         fprintf(stderr, "\x1b[33;1m[WARNING]\x1b[m ");
-        fprintf(stderr, "Too many module search paths were added (the limit is %s); the extras\n"
-                "were ignored.", MAX_MODULE_SEARCH_PATHS);
+        fprintf(stderr, "Too many module search paths were added (the limit is %d); the extras\n"
+                "were ignored.\n", MAX_MODULE_SEARCH_PATHS);
     }
     {
         Ext* ext = malloc(sizeof(Ext));
