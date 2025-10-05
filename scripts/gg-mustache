@@ -1,0 +1,18 @@
+#!/usr/bin/ggwren
+
+import "lib/encodings/json" for JSON
+import "lib/io/fs" for Fs
+import "lib/mustache" for Mustache
+import "lib/os" for Process
+
+if (Process.arguments.count != 3) {
+    System.print("Usage:\n\n    %(Process.arguments[0]) <template-path> <data-path>")
+    Process.exit(2)
+}
+
+var template = Fs.readEntireFile(Process.arguments[1])
+var data = JSON.decode(Fs.readEntireFile(Process.arguments[2]))
+
+var rendered = Mustache.render(template, data)
+
+System.write(rendered)
