@@ -58,11 +58,19 @@ class Task {
     logError(msg) { System.print("[error in %(name)] %(msg)") }
     logExit(reason) { System.print("[%(name) exited early] %(reason)") }
 
+    wake() {
+        _rendezvous = 0
+    }
     sleep(dt) {
         Fiber.yield(queue.now + dt)
     }
+    sleep {
+        Fiber.yield(Num.infinity)
+    }
     yield { Fiber.yield() }
     exit(reason) { Fiber.yield(TaskExitSignal.new(reason)) }
+
+    isDone { fiber.isDone || _exited }
 
     resume() {
         assert (!fiber.isDone)
@@ -106,6 +114,14 @@ class TaskQueue is Heap {
 
     now { _now }
 
+    flush() {
+        /* Run tasks until the queue is empty. */
+        while (count > 0) {
+            update()
+            sleepUntilNext()
+        }
+    }
+
     update() {
         _now = Time.hpc / Time.hpcResolution
         while ((count > 0) && (top.rendezvous <= _now)) {
@@ -115,7 +131,7 @@ class TaskQueue is Heap {
                 var f = Fiber.new{ task.finish() }
                 f.try()
                 if (f.error) {
-                    task.logError(GG.error)
+                    task.logError(GG.error.trim())
                 }
             } else {
                 _toKeep.add(task)
