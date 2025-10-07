@@ -578,7 +578,37 @@ WrenForeignMethodFn apiConfig_bindForeignMethod(
     return result;
 }
 
-// @todo relative imports
+const char* apiConfig_resolveModule(WrenVM *vm, const char* importer, const char* name) {
+    char* result = malloc(strlen(importer)+strlen(name)+2);
+    if (name[0] == '.') {
+        strcpy(result, importer);
+        const char* trimmed_name = &name[1];
+        for (size_t i = 1; name[i] == '.'; i ++) {
+            // For every dot past the first, go up one level.
+            ssize_t last_slash = -1;
+            for (size_t j = 0; result[j]; j ++) {
+                if (result[j] == '/') {
+                    last_slash = j;
+                }
+            }
+            if (last_slash >= 0) {
+                result[last_slash] = 0;
+            } else {
+                result[0] = 0;
+            }
+            trimmed_name = &name[i+1];
+        }
+        if (result[0] == 0) {
+            strcpy(result, trimmed_name);
+        } else {
+            strcat(result, "/");
+            strcat(result, trimmed_name);
+        }
+    } else {
+        strcpy(result, name);
+    }
+    return result;
+}
 
 void apiConfig_loadModuleComplete(WrenVM* vm, const char* module, WrenLoadModuleResult result) {
     if (result.source) free((void*)(result.source));
@@ -586,7 +616,6 @@ void apiConfig_loadModuleComplete(WrenVM* vm, const char* module, WrenLoadModule
 
 WrenLoadModuleResult apiConfig_loadModule(WrenVM* vm, const char* name) {
     WrenLoadModuleResult result = {0};
-    // @todo doesn't seem to set up loadModuleComplete?
     if (strcmp(name, "gg") == 0) {
         result.source = GG_SOURCE;
     } else if (preboundModuleName && (strcmp(name, preboundModuleName) == 0)) {
@@ -602,6 +631,9 @@ WrenLoadModuleResult apiConfig_loadModule(WrenVM* vm, const char* name) {
             printfBuffer(&modulePath, "%s/%s/lib.wren", moduleSearchPaths[i], name);
             result.source = readEntireFile(modulePath.bytes, NULL);
             if (result.source) break;
+        }
+        if (result.source) {
+            result.onComplete = apiConfig_loadModuleComplete;
         }
     }
     return result;
@@ -790,6 +822,7 @@ int main(int argc_, char** argv_) {
             config.bindForeignMethodFn = &apiConfig_bindForeignMethod;
             config.bindForeignClassFn = &apiConfig_bindForeignClass;
             config.loadModuleFn = &apiConfig_loadModule;
+            config.resolveModuleFn = &apiConfig_resolveModule;
             vm = wrenNewVM(&config);
             WrenInterpretResult result = wrenInterpret(
                 vm,
