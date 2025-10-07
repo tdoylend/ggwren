@@ -817,6 +817,94 @@ void apiStatic_Term_prompt_0(WrenVM* vm) {
     free(result);
 }
 
+typedef struct U32Array U32Array;
+struct U32Array {
+    size_t count;
+    uint32_t data[];
+};
+
+void apiAllocate_U32Array(WrenVM* vm) {
+    size_t count = (size_t)wrenGetSlotDouble(vm, 1);
+    U32Array* array = wrenSetSlotNewForeign(vm, 0, 0, sizeof(U32Array) + count*sizeof(uint32_t));
+    array->count = count;
+    memset(array->data, 0, count*sizeof(uint32_t));
+}
+
+void api_U32Array_count_getter(WrenVM* vm) {
+    U32Array* array = wrenGetSlotForeign(vm, 0);
+    wrenSetSlotDouble(vm, 0, (double)(array->count));
+}
+
+void api_U32Array_opIndex_1(WrenVM* vm) {
+    U32Array* array = wrenGetSlotForeign(vm, 0);
+    size_t index = (size_t)wrenGetSlotDouble(vm, 1);
+    if ((index < 0) || (index >= array->count)) {
+        wrenSetSlotString(vm, 0, "Subscript out of bounds.");
+        wrenAbortFiber(vm, 0);
+        return;
+    }
+    wrenSetSlotDouble(vm, 0, (double)(array->data[index]));
+}
+
+void api_U32Array_opIndex_2(WrenVM* vm) {
+    U32Array* array = wrenGetSlotForeign(vm, 0);
+    size_t index = (size_t)wrenGetSlotDouble(vm, 1);
+    uint32_t value = (uint32_t)wrenGetSlotDouble(vm, 2);
+    if (index >= array->count) {
+        wrenSetSlotString(vm, 0, "Subscript out of bounds.");
+        wrenAbortFiber(vm, 0);
+        return;
+    }
+    array->data[index] = value;
+    wrenSetSlotDouble(vm, 0, (double)value);
+}
+
+void api_U32Array_fill_1(WrenVM* vm) {
+    U32Array* array = wrenGetSlotForeign(vm, 0);
+    uint32_t value = (uint32_t)wrenGetSlotDouble(vm, 1);
+    for (size_t i = 0; i < array->count; i ++) {
+        array->data[i] = value;
+    }
+    wrenSetSlotNull(vm, 0);
+}
+
+void api_U32Array_fill_3(WrenVM* vm) {
+    U32Array* array = wrenGetSlotForeign(vm, 0);
+    size_t start = (size_t)wrenGetSlotDouble(vm, 0);
+    uint32_t value = (uint32_t)wrenGetSlotDouble(vm, 1);
+    size_t count = (size_t)wrenGetSlotDouble(vm, 2);
+    if ((start+count) > array->count) {
+        wrenSetSlotString(vm, 0, "Fill would go past the end of the array.");
+        wrenAbortFiber(vm, 0);
+        return;
+    }
+    size_t remaining, index;
+    for (index = start, remaining = count; count > 0; count --, index ++) {
+        array->data[index] = value;
+    }
+    wrenSetSlotNull(vm, 0);
+}
+
+void api_U32Array_copy_3(WrenVM* vm) {
+    U32Array* array = wrenGetSlotForeign(vm, 0);
+    size_t target = (size_t)wrenGetSlotDouble(vm, 0);
+    size_t source = (size_t)wrenGetSlotDouble(vm, 1);
+    size_t count = (size_t)wrenGetSlotDouble(vm, 2);
+    if ((source+count) > array->count) {
+        wrenSetSlotString(vm, 0, "Source would go past the end of the array.");
+        wrenAbortFiber(vm, 0);
+        return;
+    }
+    if ((target+count) > array->count) {
+        wrenSetSlotString(vm, 0, "Target would go past the end of the array.");
+        wrenAbortFiber(vm, 0);
+        return;
+    }
+    memmove(&array->data[target], &array->data[source], count*sizeof(uint32_t));
+    
+}
+
+
 void initBuiltins(void) {
     ggRegisterClass("Buffer", &apiAllocate_Buffer, &apiFinalize_Buffer);
     ggRegisterMethod("Buffer", "write(_)", &api_Buffer_write_1);
@@ -884,4 +972,14 @@ void initBuiltins(void) {
 
     ggRegisterMethod("Deque", "static fastCopy_(_,_,_,_)", &apiStatic_Deque_fastCopy__4);
     ggRegisterMethod("Term", "static prompt()", &apiStatic_Term_prompt_0);
+
+    ggRegisterClass("U32Array", &apiAllocate_U32Array, NULL);
+    ggRegisterMethod("U32Array", "count", &api_U32Array_count_getter);
+    ggRegisterMethod("U32Array", "[_]", &api_U32Array_opIndex_1);
+    ggRegisterMethod("U32Array", "iteratorValue(_)", &api_U32Array_opIndex_1);
+    ggRegisterMethod("U32Array", "[_]=(_)", &api_U32Array_opIndex_2);
+    ggRegisterMethod("U32Array", "fill(_)", &api_U32Array_fill_1);
+    ggRegisterMethod("U32Array", "fill(_,_,_)", &api_U32Array_fill_3);
+    ggRegisterMethod("U32Array", "copy(_,_,_)", &api_U32Array_copy_3);
+
 }

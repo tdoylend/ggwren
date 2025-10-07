@@ -28,6 +28,32 @@ import "gg" for GG
 
 GG.bind("builtins")
 
+foreign class U32Array is Sequence {
+    construct new(count) {}
+    foreign count
+
+    foreign [index]
+    foreign [index]=(value)
+
+    iterate(iterator) {
+        if (iterator == null) {
+            iterator = 0
+        } else {
+            iterator = iterator + 1
+        }
+        if (iterator == count) {
+            return null
+        } else {
+            return iterator
+        }
+    }
+
+    foreign fill(value)
+    foreign fill(start, value, count)
+    foreign copy(target, source, count)
+    foreign iteratorValue(iterator)
+}
+
 class Deque is Sequence {
     construct new() {
         _contents = [null, null, null, null]
