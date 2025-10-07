@@ -157,9 +157,9 @@ var BytewiseLexicalOrdering = Fn.new{|a, b|
     b = b.bytes
     while (true) {
         if (a.count == index) {
-            return false
-        } else if (b.count == index) {
             return true
+        } else if (b.count == index) {
+            return false
         } else {
             if (a[index] > b[index]) {
                 return false
