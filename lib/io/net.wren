@@ -40,6 +40,8 @@ foreign class TcpStream is Stream {
     foreign peerAddress
     foreign peerPort
 
+    foreign fd
+
     // Set or get the blocking status of the socket.
     foreign blocking
     foreign blocking=(enabled)
@@ -74,6 +76,8 @@ foreign class TcpListener {
 
     foreign blocking
     foreign blocking=(enabled)
+
+    foreign fd
 
     accept() { TcpStream.acceptFrom_(this) }
     foreign close()

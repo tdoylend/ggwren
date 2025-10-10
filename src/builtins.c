@@ -36,6 +36,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <netdb.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -707,6 +708,16 @@ void api_socket_isOpen_getter(WrenVM* vm) {
     wrenSetSlotBool(vm, 0, *sock >= 0);
 }
 
+void api_socket_fd_getter(WrenVM* vm) {
+    int* sock = wrenGetSlotForeign(vm, 0);
+    if (*sock >= 0) {
+        wrenSetSlotDouble(vm, 0, (double)(*sock));
+    } else {
+        wrenSetSlotString(vm, 0, "Socket has already been closed.");
+        wrenAbortFiber(vm, 0);
+    }
+}
+
 void apiAllocate_TcpStream(WrenVM* vm) {
     int* sock = wrenSetSlotNewForeign(vm, 0, 0, sizeof(int));
 
@@ -817,6 +828,72 @@ void apiStatic_Term_prompt_0(WrenVM* vm) {
     free(result);
 }
 
+typedef struct Poll Poll;
+struct Poll {
+    struct pollfd *fds;
+    nfds_t nfds;
+};
+
+void apiAllocate_Poll(WrenVM* vm) {
+    Poll* poll = wrenSetSlotNewForeign(vm, 0, 0, sizeof(Poll));
+    memset(poll, 0, sizeof(Poll));
+}
+
+void apiFinalize_Poll(void* data) {
+    Poll* poll = data;
+    if (poll->fds) free(poll->fds);
+}
+
+void api_Poll_poll_3(WrenVM* vm) {
+    Poll* pollObj = wrenGetSlotForeign(vm, 0);
+    size_t fdCount = wrenGetListCount(vm, 1);
+    size_t eventCount = wrenGetListCount(vm, 2);
+    double timeout = wrenGetSlotDouble(vm, 3);
+    if (fdCount != eventCount) {
+        wrenSetSlotString(vm, 0, "The FD and event lists must be of equal length.");
+        wrenAbortFiber(vm, 0);
+        return;
+    }
+    if (pollObj->nfds < fdCount) {
+        pollObj->nfds = nextPowerOfTwo(fdCount);
+        pollObj->fds = realloc(pollObj->fds, sizeof(struct pollfd) * pollObj->nfds);
+    }
+    for (size_t i = 0; i < fdCount; i ++) {
+        wrenGetListElement(vm, 1, i, 3);
+        int fd = (int)wrenGetSlotDouble(vm, 3);
+        pollObj->fds[i].fd = fd;
+        wrenGetListElement(vm, 2, i, 3);
+        int requestedEvents = (int)wrenGetSlotDouble(vm, 3);
+        short events = 0;
+        if (requestedEvents & 0x1) events |= POLLIN;
+        if (requestedEvents & 0x2) events |= POLLOUT;
+        pollObj->fds[i].events = events;
+        pollObj->fds[i].revents = 0;
+    }
+    int iTimeout = (int)(timeout * 1000);
+    int result = poll(pollObj->fds, fdCount, iTimeout);
+    if (result >= 0) {
+        size_t trueResult = 0;
+        for (size_t i = 0; i < fdCount; i ++) {
+            short revents = pollObj->fds[i].revents;
+            int returnedEvents = 0;
+            if (revents & POLLIN) returnedEvents |= 0x01;
+            if (revents & POLLOUT) returnedEvents |= 0x02;
+            if (revents & POLLERR) returnedEvents |= 0x04;
+            if (revents & POLLHUP) returnedEvents |= 0x08;
+            if (revents & POLLNVAL) returnedEvents |= 0x10;
+            wrenSetSlotDouble(vm, 3, (double)(returnedEvents));
+            wrenSetListElement(vm, 2, i, 3);
+            if (returnedEvents) {
+                trueResult ++;
+            }
+        }
+        wrenSetSlotDouble(vm, 0, (double)(trueResult));
+    } else {
+        abortErrno(vm, errno);
+    }
+}
+
 typedef struct U32Array U32Array;
 struct U32Array {
     size_t count;
@@ -904,7 +981,6 @@ void api_U32Array_copy_3(WrenVM* vm) {
     
 }
 
-
 void initBuiltins(void) {
     ggRegisterClass("Buffer", &apiAllocate_Buffer, &apiFinalize_Buffer);
     ggRegisterMethod("Buffer", "write(_)", &api_Buffer_write_1);
@@ -958,6 +1034,7 @@ void initBuiltins(void) {
     ggRegisterMethod("TcpListener", "blocking=(_)", &api_socket_blocking_setter);
     ggRegisterMethod("TcpListener", "close()", &api_socket_close_0);
     ggRegisterMethod("TcpListener", "isOpen", &api_socket_isOpen_getter);
+    ggRegisterMethod("TcpListener", "fd", &api_socket_fd_getter);
 
     ggRegisterClass("TcpStream", &apiAllocate_TcpStream, &apiFinalize_socket);
     ggRegisterMethod("TcpStream", "static acceptFrom_(_)", &apiStatic_TcpStream_acceptFrom__1);
@@ -969,6 +1046,10 @@ void initBuiltins(void) {
     ggRegisterMethod("TcpStream", "peerPort", &api_TcpStream_peerPort_getter);
     ggRegisterMethod("TcpStream", "write(_)", &api_TcpStream_write_1);
     ggRegisterMethod("TcpStream", "isOpen", &api_socket_isOpen_getter);
+    ggRegisterMethod("TcpStream", "fd", &api_socket_fd_getter);
+
+    ggRegisterClass("Poll", &apiAllocate_Poll, &apiFinalize_Poll);
+    ggRegisterMethod("Poll", "poll(_,_,_)", &api_Poll_poll_3);
 
     ggRegisterMethod("Deque", "static fastCopy_(_,_,_,_)", &apiStatic_Deque_fastCopy__4);
     ggRegisterMethod("Term", "static prompt()", &apiStatic_Term_prompt_0);

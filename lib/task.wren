@@ -25,8 +25,9 @@
 /**************************************************************************************************/
 
 import "lib/assert" for Assert
+import "lib/io/poll" for Poll
 import "lib/named_singleton" for NamedSingleton
-import "lib/structures" for Heap
+import "lib/structures" for Deque
 import "lib/time" for Time
 import "gg" for GG
 
@@ -34,8 +35,19 @@ class TaskExitSignal {
     construct new(reason) {
         _reason = reason 
     }
-
     reason { _reason }
+}
+
+class Listener {
+    construct new() {
+        _fd = null
+        _events = null
+    }
+
+    events { _events }
+    events=(value) { _events = value }
+    fd { _fd }
+    fd=(value) { _fd = value }
 }
 
 class Task {
@@ -43,9 +55,10 @@ class Task {
         _rendezvous = 0
         _name = "(unnamed task)"
         _fiber = Fiber.new{ this.run( ) }
-        _queue = queue
-        _queue.add(this)
         _exited = false
+
+        _queue = queue
+        _entry = _queue.add(this)
     }
 
     name { _name }
@@ -53,22 +66,34 @@ class Task {
     fiber { _fiber }
     queue { _queue }
     toString { _name }
-    rendezvous { _rendezvous }
 
     logError(msg) { System.print("[error in %(name)] %(msg)") }
     logExit(reason) { System.print("[%(name) exited early] %(reason)") }
 
     wake() {
-        _rendezvous = 0
+        _entry.wake()
     }
     sleep(dt) {
-        Fiber.yield(queue.now + dt)
+        _entry.active = false
+        _entry.wakeAt = _queue.now + dt
+        Fiber.yield()
     }
     sleep {
-        Fiber.yield(Num.infinity)
+        _entry.active = false
+        Fiber.yield()
     }
-    yield { Fiber.yield() }
+    sleepFD(fd, events) {
+        _listener = _listener || Listener.new()
+        _listener.fd = fd
+        _listener.events = events
+        _entry.active = false
+        _entry.listeners.clear()
+        _entry.listeners.add(_listener)
+        Fiber.yield()
+    }
+
     exit(reason) { Fiber.yield(TaskExitSignal.new(reason)) }
+    static exit(reason) { Fiber.yield(TaskExitSignal.new(reason)) }
 
     isDone { fiber.isDone || _exited }
 
@@ -77,7 +102,7 @@ class Task {
         assert (!_exited)
         var r = fiber.try()
         if (r is Num) {
-            _rendezvous = r
+            _entry.wakeTime = r
         } else if (r is TaskExitSignal) {
             _exited = true
             logExit(r.reason)
@@ -100,55 +125,141 @@ class Task {
 }
 Assert.mixin(Task)
 
-class TaskQueue is Heap {
+class TaskEntry {
+    construct new(task) {
+        _id = Object.address(task)
+        _task = task
+        _active = true
+        _wakeAt = null
+        _listeners = []
+    }
+
+    wake() {
+        _active = true
+        _wakeAt = null
+        _listeners.clear()
+    }
+
+    active { _active }
+    active=(value) { _active=value }
+
+    wakeAt { _wakeAt }
+    wakeAt=(value) { _wakeAt=value }
+
+    listeners { _listeners }
+    task { _task }
+
+    id { _id }
+}
+
+class TaskQueue {
     construct new() {
-        super {|a, b| a.rendezvous <= b.rendezvous }
-        _toKeep = []
-        _now = Time.hpc / Time.hpcResolution
+        _tasks = Deque.new()
+        _running = null
+
+        _wakeAfterSleep = []
+
+        _poll = null
+
+        _pollFDs = []
+        _pollEvents = []
+        _pollEntries = []
     }
 
-    add(elem) {
-        assert(elem is Task)
-        super.add(elem)
+    add(task) { 
+        var entry = TaskEntry.new(task)
+        _tasks.addFront(entry)
+        return entry
     }
 
-    now { _now }
+    count { _tasks.count + (_running ? 1 : 0) }
+
+    now { Time.now }
 
     flush() {
-        /* Run tasks until the queue is empty. */
-        while (count > 0) {
-            update()
-            sleepUntilNext()
-        }
+        while (count > 0) update()
     }
 
     update() {
-        _now = Time.hpc / Time.hpcResolution
-        while ((count > 0) && (top.rendezvous <= _now)) {
-            var task = pop()
-            var isDone = task.resume()
-            if (isDone) {
-                var f = Fiber.new{ task.finish() }
-                f.try()
-                if (f.error) {
-                    task.logError(GG.error.trim())
+        var now = this.now
+        var nextWake = null
+        var anyActiveNow = false
+        _wakeAfterSleep.clear()
+        for (i in 0..._tasks.count) {
+            _running = _tasks.popBack()
+            if (_running.wakeAt) {
+                if (_running.wakeAt <= now) {
+                    _running.wake()
+                } else if (!nextWake || (nextWake > _running.wakeAt)) {
+                    _wakeAfterSleep.clear()
+                    nextWake = _running.wakeAt
+                    _wakeAfterSleep.add(_running)
+                } else if (nextWake == _running.wakeAt) {
+                    _wakeAfterSleep.add(_running)
+                }
+            }
+            for (listener in _running.listeners) {
+                _pollFDs.add(listener.fd)
+                _pollEvents.add(listener.events)
+                _pollEntries.add(_running)
+            }
+            if (_running.active) anyActiveNow = true
+            _tasks.addFront(_running)
+            _running = null
+        }
+
+        var timeout
+        if (anyActiveNow) {
+            timeout = 0
+        } else if (nextWake) {
+            timeout = nextWake - now
+        } else {
+            timeout = -1
+        }
+
+        if (_pollFDs.count > 0) {
+            if (!_poll) _poll = Poll.new()
+            var result = _poll.poll(_pollFDs, _pollEvents, timeout)
+            for (i in 0..._pollEvents.count) {
+                if (_pollEvents[i] > 0) {
+                    _pollEntries[i].wake()
+                }
+            }
+            if (result == 0) {
+                for (entry in _wakeAfterSleep) entry.wake()
+            }
+            _pollFDs.clear()
+            _pollEvents.clear()
+            _pollEntries.clear()
+        } else {
+            if (timeout > 0) {
+                Time.sleep(timeout)
+                for (entry in _wakeAfterSleep) entry.wake()
+            } else if (timeout == 0) {
+                /* do nothing */
+            } else {
+                Fiber.abort("All tasks are sleeping. Please send a handsome prince.")
+            }
+        }
+        _wakeAfterSleep.clear()
+
+        for (i in 0..._tasks.count) {
+            _running = _tasks.popBack()
+            if (_running.active) {
+                var done = _running.task.resume()
+                if (done) {
+                    var f = Fiber.new{ _running.task.finish() }
+                    f.try()
+                    if (f.error) {
+                        _running.task.logError(GG.error.trim())
+                    }
+                } else {
+                    _tasks.addFront(_running)
                 }
             } else {
-                _toKeep.add(task)
+                _tasks.addFront(_running)
             }
-        }
-        for (task in _toKeep) {
-            add(task)
-        }
-        _toKeep.clear()
-    }
-
-    sleepUntilNext() {
-        if (count > 0) {
-            _now = Time.hpc / Time.hpcResolution
-            if (top.rendezvous > _now) {
-                Time.sleep(top.rendezvous - _now)
-            }
+            _running = null
         }
     }
 }
