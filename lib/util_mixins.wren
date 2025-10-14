@@ -10,14 +10,33 @@ class StringMixins {
             return index
         }
     }
+    
+    find(substring, start) {
+        var index = this.indexOf(substring, start)
+        if (index < 0) {
+            return null
+        } else {
+            return index
+        }
+    }
 
     upper { S.asciiUpper(this) }
     lower { S.asciiLower(this) }
     title { S.asciiTitle(this) }
     capitalize { S.asciiCapitalize(this) }
+
+    splitOnce(substring) {
+        var index = this.find(substring)
+        if (index) {
+            return [this[0...index], this[index+substring.bytes.count...this.bytes.count]]
+        } else {
+            return null
+        }
+    }
 }
 
-Meta.extend(String, StringMixins, ["upper", "lower", "find(_)", "title", "capitalize"])
+Meta.extend(String, StringMixins, ["upper", "lower", "find(_)", "find(_,_)", "title", "capitalize",
+        "splitOnce(_)"])
 
 class NumMixins {
     times(fn) {
@@ -30,6 +49,20 @@ class NumMixins {
 }
 
 Meta.extend(Num, NumMixins, ["times(_)"])
+
+class MapMixins {
+    update(other) {
+        for (entry in other) this[entry.key] = entry.value
+    }
+
+    | (other) {
+        var result = {}
+        for (entry in this) result[entry.key] = entry.value
+        for (entry in other) result[entry.key] = entry.value
+    }
+}
+
+Meta.extend(Map, MapMixins, ["update(_)","|(_)"])
 
 class MaybeMixins {
     then(fn) { this ? fn.call(this) : this }

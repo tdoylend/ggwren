@@ -223,6 +223,15 @@ void api_Statement_reset_0(WrenVM* vm) {
     }
 }
 
+void api_Statement_close_0(WrenVM* vm) {
+    Statement* statement = (Statement*)wrenGetSlotForeign(vm, 0);
+    int result = sqlite3_finalize(statement->stmt);
+    statement->stmt = NULL;
+    if (result != SQLITE_OK) {
+        abortSqlite(vm, statement->db);
+    }
+}
+
 void ggExt_init(void) {
     ggRegisterClass("SQLite3", &apiAllocate_SQLite3, apiFinalize_SQLite3);
     ggRegisterMethod("SQLite3", "executeScript(_)", &api_SQLite3_executeScript_1);
@@ -235,4 +244,5 @@ void ggExt_init(void) {
     ggRegisterMethod("Statement", "columnName(_)", &api_Statement_columnName_1);
     ggRegisterMethod("Statement", "columnCount", &api_Statement_columnCount_getter);
     ggRegisterMethod("Statement", "reset()", &api_Statement_reset_0);
+    ggRegisterMethod("Statement", "close()", &api_Statement_close_0);
 }

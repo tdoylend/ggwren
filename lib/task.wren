@@ -53,7 +53,7 @@ class Listener {
 class Task {
     construct new(queue) {
         _rendezvous = 0
-        _name = "(unnamed task)"
+        _name = null
         _fiber = Fiber.new{ this.run( ) }
         _exited = false
 
@@ -61,7 +61,7 @@ class Task {
         _entry = _queue.add(this)
     }
 
-    name { _name }
+    name { _name || this.type.name }
     name=(value) { _name = value }
     fiber { _fiber }
     queue { _queue }
@@ -89,6 +89,16 @@ class Task {
         _entry.active = false
         _entry.listeners.clear()
         _entry.listeners.add(_listener)
+        Fiber.yield()
+    }
+    sleepFD(fd, events, timeout) {
+        _listener = _listener || Listener.new()
+        _listener.fd = fd
+        _listener.events = events
+        _entry.active = false
+        _entry.listeners.clear()
+        _entry.listeners.add(_listener)
+        _entry.wakeAt = _queue.now + timeout
         Fiber.yield()
     }
 

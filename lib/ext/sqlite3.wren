@@ -64,17 +64,6 @@ GG.bind("sqlite3")
 
 var StatementRowObjects = {}
 
-foreign class Statement {
-    // This corresponds to a sqlite3_stmt in the underlying C layer.
-    construct prepare(db, text) {}
-    foreign bind(index, value)
-    foreign step()
-    foreign column(index)
-    foreign columnName(index)
-    foreign columnCount
-    foreign reset()
-}
-
 class StatementResult is Sequence {
     construct new(text, statement) {
         _statement = statement
@@ -93,6 +82,7 @@ class StatementResult is Sequence {
 
     first { _first }
     current { _current }
+    close() { _statement.close() }
 
     step() {
         if (_statement.step()) {
@@ -224,27 +214,143 @@ class StatementResult is Sequence {
     }
 }
 
-// A connection to a SQLite3 database.
+foreign class Statement {
+    // This corresponds to a sqlite3_stmt in the underlying C layer.
+    construct prepare(db, text) {}
+    foreign bind(index, value)
+    foreign step()
+    foreign column(index)
+    foreign columnName(index)
+    foreign columnCount
+    foreign reset()
+    foreign close()
+}
+
+var Dispatch = [
+    null,
+    null,
+    Fn.new{|fn, stmt| fn.call(stmt.column(0),stmt.column(1))},
+    Fn.new{|fn, stmt| fn.call(stmt.column(0),stmt.column(1),stmt.column(2))},
+    Fn.new{|fn, stmt| fn.call(stmt.column(0),stmt.column(1),stmt.column(2),stmt.column(3))},
+    Fn.new{|fn, stmt| fn.call(stmt.column(0),stmt.column(1),stmt.column(2),stmt.column(3),
+            stmt.column(4))},
+    Fn.new{|fn, stmt| fn.call(stmt.column(0),stmt.column(1),stmt.column(2),stmt.column(3),
+            stmt.column(4),stmt.column(5))},
+    Fn.new{|fn, stmt| fn.call(stmt.column(0),stmt.column(1),stmt.column(2),stmt.column(3),
+            stmt.column(4),stmt.column(5),stmt.column(6))},
+    Fn.new{|fn, stmt| fn.call(stmt.column(0),stmt.column(1),stmt.column(2),stmt.column(3),
+            stmt.column(4),stmt.column(5),stmt.column(6),stmt.column(7))},
+    Fn.new{|fn, stmt| fn.call(stmt.column(0),stmt.column(1),stmt.column(2),stmt.column(3),
+            stmt.column(4),stmt.column(5),stmt.column(6),stmt.column(7),
+            stmt.column(8))},
+    Fn.new{|fn, stmt| fn.call(stmt.column(0),stmt.column(1),stmt.column(2),stmt.column(3),
+            stmt.column(4),stmt.column(5),stmt.column(6),stmt.column(7),
+            stmt.column(8),stmt.column(9))},
+    Fn.new{|fn, stmt| fn.call(stmt.column(0),stmt.column(1),stmt.column(2),stmt.column(3),
+            stmt.column(4),stmt.column(5),stmt.column(6),stmt.column(7),
+            stmt.column(8),stmt.column(9),stmt.column(10))},
+    Fn.new{|fn, stmt| fn.call(stmt.column(0),stmt.column(1),stmt.column(2),stmt.column(3),
+            stmt.column(4),stmt.column(5),stmt.column(6),stmt.column(7),
+            stmt.column(8),stmt.column(9),stmt.column(10),stmt.column(11))},
+    Fn.new{|fn, stmt| fn.call(stmt.column(0),stmt.column(1),stmt.column(2),stmt.column(3),
+            stmt.column(4),stmt.column(5),stmt.column(6),stmt.column(7),
+            stmt.column(8),stmt.column(9),stmt.column(10),stmt.column(11),
+            stmt.column(12))},
+    Fn.new{|fn, stmt| fn.call(stmt.column(0),stmt.column(1),stmt.column(2),stmt.column(3),
+            stmt.column(4),stmt.column(5),stmt.column(6),stmt.column(7),
+            stmt.column(8),stmt.column(9),stmt.column(10),stmt.column(11),
+            stmt.column(12),stmt.column(13))},
+    Fn.new{|fn, stmt| fn.call(stmt.column(0),stmt.column(1),stmt.column(2),stmt.column(3),
+            stmt.column(4),stmt.column(5),stmt.column(6),stmt.column(7),
+            stmt.column(8),stmt.column(9),stmt.column(10),stmt.column(11),
+            stmt.column(12),stmt.column(13),stmt.column(14))},
+    Fn.new{|fn, stmt| fn.call(stmt.column(0),stmt.column(1),stmt.column(2),stmt.column(3),
+            stmt.column(4),stmt.column(5),stmt.column(6),stmt.column(7),
+            stmt.column(8),stmt.column(9),stmt.column(10),stmt.column(11),
+            stmt.column(12),stmt.column(13),stmt.column(14),stmt.column(15))}
+]
+
 foreign class SQLite3 {
-    // Open the connection. A blank database file will be created if one does
-    // not exist at `path`.
     construct open(path) {}
 
-    // Execute a query. Bindings should be a List of values to bind to the query.
-    // The returned value is a QueryResult, which can be iterated over.
-    sql(text) { StatementResult.new(text, Statement.prepare(this, text)) }
-    sql(text, bindings) {
-        var statement = Statement.prepare( this, text)
+    sql(text) {
+        var statement = Statement.prepare(this, text)
+        return finish_(statement, text, null)
+    }
+
+    sql(text, alpha) {
+        var statement = Statement.prepare(this, text)
+        if (alpha is Fn) {
+            return finish_(statement, text, alpha)
+        } else {
+            bindParameters_(statement, alpha)
+            return finish_(statement, text, null)
+        }
+    }
+
+    sql(text, bindings, rowFn) {
+        var statement = Statement.prepare(this, text)
+        bindParameters_(statement, bindings)
+        return finish_(statement, text, rowFn)
+    }
+
+    bindParameters_(statement, bindings) {
         if ((bindings is Sequence) && !(bindings is String)) {
             bindings.each{ |elem, idx| statement.bind(idx + 1, elem) }
         } else {
             statement.bind(1, bindings)
         }
-        return StatementResult.new(text, statement)
+    }
+
+    transact(fn) {
+        sql("BEGIN TRANSACTION")
+        fn.call()
+        sql("COMMIT TRANSACTION")
+    }
+
+    finish_(statement, text, rowFn) {
+        var result = null
+        if (statement.columnCount == 0) {
+            if (rowFn) {
+                while (statement.step()) {
+                    if (rowFn.call(null) == false) break
+                }
+            } else {
+                statement.step()
+            }
+        } else if (statement.columnCount == 1) {
+            if (rowFn) {
+                while (statement.step()) {
+                    if (rowFn.call(statement.column(0)) == false) break
+                }
+            } else {
+                if (statement.step()) result = statement.column(0)
+            }
+        } else {
+            if (rowFn) {
+                if (rowFn.arity == statement.columnCount) {
+                    var a = rowFn.arity
+                    while (statement.step()) {
+                        if (Dispatch[a].call(rowFn, statement) == false) break
+                    }
+                } else {
+                    var rowClass = getRowFactory(statement, text)
+                    while (statement.step()) {
+                        if (rowFn.call(rowClass.new(statement)) == false) break
+                    }
+                }
+            } else {
+                var rowClass = getRowFactory(statement, text)
+                if (statement.step()) result = rowClass.new(statement)
+            }
+        }
+        statement.close()
+        return result
     }
 
     [text] { sql(text) }
-    [text, bindings] { sql(text, bindings) }
+    [text, alpha] { sql(text, alpha) }
+    [text, alpha, rowFn] { sql(text, alpha, rowFn) }
 
     foreign executeScript(script)
 
