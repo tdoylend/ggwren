@@ -24,7 +24,7 @@
 
 /**************************************************************************************************/
 
-import "lib/buffer" for Buffer
+import "std.buffer" for Buffer
 
 var Hex = "0123456789abcdef"
 

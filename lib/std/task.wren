@@ -24,11 +24,11 @@
 
 /**************************************************************************************************/
 
-import "lib/assert" for Assert
-import "lib/io/poll" for Poll
-import "lib/named_singleton" for NamedSingleton
-import "lib/structures" for Deque
-import "lib/time" for Time
+import "std.assert" for Assert
+import "std.io.poll" for Poll
+import "std.named_singleton" for NamedSingleton
+import "std.structures" for Deque
+import "std.time" for Time
 import "gg" for GG
 
 class TaskExitSignal { 

@@ -24,7 +24,7 @@
 
 /**************************************************************************************************/
 
-import "lib/buffer" for Buffer
+import "std.buffer" for Buffer
 
 import "gg" for GG
 

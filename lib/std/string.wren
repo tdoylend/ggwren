@@ -24,7 +24,7 @@
 
 /**************************************************************************************************/
 
-import "lib/buffer" for Buffer
+import "std.buffer" for Buffer
 
 class StringUtil {
     // Check is a string is valid UTF-8.

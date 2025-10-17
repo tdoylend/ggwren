@@ -25,7 +25,7 @@
 /**************************************************************************************************/
 
 import "meta" for Meta
-import "lib/buffer" for Buffer
+import "std.buffer" for Buffer
 
 var AllowedInURLEncodeRaw = 
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-~".bytes.toList

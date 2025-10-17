@@ -1,4 +1,4 @@
-import "lib/string" for StringUtil as S
+import "bin.string" for StringUtil as S
 import "meta" for Meta
 
 class StringMixins {

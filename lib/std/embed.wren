@@ -24,42 +24,32 @@
 
 /**************************************************************************************************/
 
-import "gg" for GG
-import "std.io.stream" for Stream
+import "lib/buffer" for Buffer
 
-GG.bind("builtins")
+var Parent = null
 
-// A Buffer is essentially a modifiable string.
-foreign class Buffer is Stream {
-    // Create an empty buffer.
-    construct new() {}
-
-    // Create a buffer pre-filled with the contents of `text`.
-    construct new(text) {
-        write(text)
+class Template {
+    construct new(fn) {
+        _fn = fn
     }
 
-    // Append to the buffer.
-    foreign write(text)
-
-    // Append a numeric value to the buffer as a byte.
-    foreign writeByte(byte)
-
-    // Return the contents of the buffer as a string.
-    foreign read()
-
-    // Equivalent to read().
-    toString { read() }
-
-    // Get the number of bytes stored in the buffer.
-    foreign size
-
-    // Clip the buffer down to `count` bytes. Returns the part removed, or null if the
-    // buffer was shorter than `count` bytes (returns "" if they were equal.)
-    foreign truncate(size)
-
-    // Clear the buffer. Equivalent to truncate(0).
-    foreign clear()
+    render() {
+        var output = Buffer.new()
+        _fn.call(data, output)
+        return output.toString
+    }
 }
 
-GG.bind(null)
+class Embed {
+    static template(source, target) {
+        var result = Buffer.new()
+        
+
+
+        Parent = parent || Object
+        result.write("Template.new{|data, buf_|
+
+        }")
+        return meta.compile(result).call()
+    }
+}

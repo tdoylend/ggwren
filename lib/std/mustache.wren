@@ -28,7 +28,7 @@
 // https://mustache.github.io/
 
 import "meta" for Meta
-import "lib/buffer" for Buffer
+import "std.buffer" for Buffer
 
 var ValidSigils = "!#&*^/>="
 
