@@ -36,11 +36,12 @@ class Stream {
         Fiber.abort("%(this.type.name)s are not partially-readable.")
     }
 
-    write() {
+    write(string) {
         Fiber.abort("%(this.type.name)s are not writable.")
     }
+    writeByte(byte) { write(String.fromByte(byte)) }
 
-    seek() {
+    seek(address) {
         Fiber.abort("%(this.type.name)s are not seekable.")
     }
 

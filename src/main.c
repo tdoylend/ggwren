@@ -166,6 +166,7 @@ WrenConfiguration config = {0};
 WrenVM* vm = NULL;
 Buffer foreignMethodSignature = {0};
 Buffer modulePath = {0};
+Buffer moduleNameTemp = {0};
 
 char* preboundModuleName = NULL;
 char* preboundModuleSource = NULL;
@@ -616,7 +617,22 @@ void apiConfig_loadModuleComplete(WrenVM* vm, const char* module, WrenLoadModule
 
 WrenLoadModuleResult apiConfig_loadModule(WrenVM* vm, const char* name) {
     WrenLoadModuleResult result = {0};
-    if (strcmp(name, "gg") == 0) {
+    bool invalid_chars_in_name = false;
+    clearBuffer(&moduleNameTemp);
+    size_t name_count = strlen(name);
+    for (size_t i = 0; i < name_count; i ++) {
+        if ((name[i] == '/') || (name[i] == '\\') || (name[i] < 32) || (name[i] > 126)) {
+            invalid_chars_in_name = true;
+            break;
+        } else if (name[i] == '.') {
+            pushBuffer(&moduleNameTemp,"/");
+        } else {
+            pushBytesToBuffer(&moduleNameTemp, &name[i], 1);
+        }
+    }
+    if (invalid_chars_in_name) {
+        result.source = NULL;
+    } else if (strcmp(name, "gg") == 0) {
         result.source = GG_SOURCE;
     } else if (preboundModuleName && (strcmp(name, preboundModuleName) == 0)) {
         result.source = preboundModuleSource;
@@ -625,10 +641,10 @@ WrenLoadModuleResult apiConfig_loadModule(WrenVM* vm, const char* name) {
         result.source = NULL;
     } else {
         for (size_t i = 0; i < moduleSearchPathCount; i ++) {
-            printfBuffer(&modulePath, "%s/%s.wren", moduleSearchPaths[i], name);
+            printfBuffer(&modulePath, "%s/%s.wren", moduleSearchPaths[i], moduleNameTemp.bytes);
             result.source = readEntireFile(modulePath.bytes, NULL);
             if (result.source) break;
-            printfBuffer(&modulePath, "%s/%s/lib.wren", moduleSearchPaths[i], name);
+            printfBuffer(&modulePath, "%s/%s/lib.wren",moduleSearchPaths[i], moduleNameTemp.bytes);
             result.source = readEntireFile(modulePath.bytes, NULL);
             if (result.source) break;
         }
@@ -770,7 +786,9 @@ int main(int argc_, char** argv_) {
         }
     }
     if (scriptDir) moduleSearchPaths[0] = dupString(scriptDir);
-    if (binDir) addModuleSearchPath(binDir);
+    char *libDir = xsprintf("%s/lib", binDir);
+    if (binDir) addModuleSearchPath(libDir);
+    free(libDir);
     if (getenv("GG_LIB")) {
         int start = 0;
         char *lib = getenv("GG_LIB");
@@ -887,6 +905,7 @@ int main(int argc_, char** argv_) {
     if (scriptDir) free(scriptDir);
     finishBuffer(&foreignMethodSignature);
     finishBuffer(&modulePath);
+    finishBuffer(&moduleNameTemp);
     if (preboundModuleName) free(preboundModuleName);
     if (preboundModuleSource) free(preboundModuleSource);
     switch (status) {

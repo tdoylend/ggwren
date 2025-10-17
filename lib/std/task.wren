@@ -82,6 +82,9 @@ class Task {
         _entry.active = false
         Fiber.yield()
     }
+    yield {
+        Fiber.yield()
+    }
     sleepFD(fd, events) {
         _listener = _listener || Listener.new()
         _listener.fd = fd
