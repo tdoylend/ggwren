@@ -24,9 +24,9 @@
 
 /**************************************************************************************************/
 
-import "lib/string" for StringUtil as S
-import "lib/io/stream" for Stream
-import "lib/buffer" for Buffer
+import "std.string" for StringUtil as S
+import "std.io.stream" for Stream
+import "std.buffer" for Buffer
 
 import "gg" for GG
 

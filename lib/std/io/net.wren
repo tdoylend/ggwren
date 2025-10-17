@@ -25,7 +25,7 @@
 /**************************************************************************************************/
 
 import "gg" for GG
-import "lib/io/stream" for Stream
+import "std.io.stream" for Stream
 
 GG.bind("builtins")
 

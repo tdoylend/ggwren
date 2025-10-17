@@ -588,7 +588,7 @@ const char* apiConfig_resolveModule(WrenVM *vm, const char* importer, const char
             // For every dot past the first, go up one level.
             ssize_t last_slash = -1;
             for (size_t j = 0; result[j]; j ++) {
-                if (result[j] == '/') {
+                if (result[j] == '.') {
                     last_slash = j;
                 }
             }
@@ -602,7 +602,7 @@ const char* apiConfig_resolveModule(WrenVM *vm, const char* importer, const char
         if (result[0] == 0) {
             strcpy(result, trimmed_name);
         } else {
-            strcat(result, "/");
+            strcat(result, ".");
             strcat(result, trimmed_name);
         }
     } else {

@@ -48,9 +48,9 @@
 // As always, you are advised to familiarize yourself with the SQLite documentation.
 // https://sqlite.org/docs.html
 
-import "lib/buffer" for Buffer
-import "lib/string" for StringUtil as S
-import "lib/util_mixins"
+import "std.buffer" for Buffer
+import "std.string" for StringUtil as S
+import "std.util_mixins"
 import "gg" for GG
 import "meta" for Meta
 
