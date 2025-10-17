@@ -630,14 +630,11 @@ WrenLoadModuleResult apiConfig_loadModule(WrenVM* vm, const char* name) {
             pushBytesToBuffer(&moduleNameTemp, &name[i], 1);
         }
     }
-    if (invalid_chars_in_name) {
-        result.source = NULL;
-    } else if (strcmp(name, "gg") == 0) {
+    if (strcmp(name, "gg") == 0) {
         result.source = GG_SOURCE;
     } else if (preboundModuleName && (strcmp(name, preboundModuleName) == 0)) {
         result.source = preboundModuleSource;
-    } else if (name[0] == '/') {
-        // Forbid absolute pathnames. @todo make this do the right thing on Windows.
+    } else if (invalid_chars_in_name) {
         result.source = NULL;
     } else {
         for (size_t i = 0; i < moduleSearchPathCount; i ++) {
