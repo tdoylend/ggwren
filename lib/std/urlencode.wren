@@ -82,6 +82,10 @@ class URLEncode {
                 } 
             } else {
                 if (byte == 37) countdown = 2
+                if (byte == 43) {
+                    result.truncate(result.size - 1)
+                    result.write(" ")
+                }
             }
         }
         return result.read()

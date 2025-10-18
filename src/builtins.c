@@ -308,6 +308,11 @@ void apiStatic_Process_exit_1(WrenVM* vm) {
     exit((int)wrenGetSlotDouble(vm,1));
 }
 
+static
+void apiStatic_Process_system_1(WrenVM* vm) {
+    wrenSetSlotDouble(vm, 0, (double)system(wrenGetSlotString(vm,1)));
+}
+
 typedef struct File File;
 struct File {
     int fd;
@@ -1003,6 +1008,7 @@ void initBuiltins(void) {
 
     ggRegisterMethod("Process", "static arguments", &apiStatic_Process_arguments_getter);
     ggRegisterMethod("Process", "static exit(_)", &apiStatic_Process_exit_1);
+    ggRegisterMethod("Process", "static system(_)", &apiStatic_Process_system_1);
 
 
     ggRegisterClass("File", &apiAllocate_File, &apiFinalize_File);

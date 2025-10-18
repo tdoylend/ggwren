@@ -470,6 +470,8 @@ void apiConfig_error(
     if (errorSentinel) {
         errorSentinel = false;
         clearBuffer(&fullError);
+        compilationErrorsShown = 0;
+        compilationErrorsHidden = 0;
     }
     if ((type != WREN_ERROR_COMPILE) && (compilationErrorsHidden > 0)) {
         appendPrintfBuffer(&fullError, NOTE "(%d additional error%s not shown)\n",

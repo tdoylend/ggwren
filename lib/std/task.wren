@@ -68,7 +68,9 @@ class Task {
     toString { _name }
 
     logError(msg) { System.print("[error in %(name)] %(msg)") }
-    logExit(reason) { System.print("[%(name) exited early] %(reason)") }
+    logExit(reason) {
+        if (reason) System.print("[%(name) exited early] %(reason)")
+    }
 
     wake() {
         _entry.wake()
@@ -224,6 +226,7 @@ class TaskQueue {
         var timeout
         if (anyActiveNow) {
             timeout = 0
+            _wakeAfterSleep.clear()
         } else if (nextWake) {
             timeout = nextWake - now
         } else {

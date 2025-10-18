@@ -109,6 +109,7 @@ Environ = Environ.init()
 class Process {
     // The command-line arguments with which the process was called.
     foreign static arguments
+    foreign static system(command)
     foreign static exit(code)
     static exit() { exit(0) }
 }
