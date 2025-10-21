@@ -40,6 +40,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
 extern char **environ;
@@ -629,7 +630,7 @@ void apiAllocate_TcpListener(WrenVM* vm) {
     int* listener = wrenSetSlotNewForeign(vm, 0, 0, sizeof(int));
     struct addrinfo *res = NULL;
     *listener = socket(AF_INET, SOCK_STREAM, 0);
-    if (listener < 0) ok = false;
+    if (*listener < 0) ok = false;
     if (ok) {
         int enable = 1;
         (void)setsockopt(*listener, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int));
@@ -662,7 +663,10 @@ void apiAllocate_TcpListener(WrenVM* vm) {
         } else {
             abortErrno(vm, errno);
         }
-        if (*listener >= 0) (void)close(*listener);
+        if (*listener >= 0) {
+            (void)close(*listener);
+            *listener = -1;
+        }
     }
 }
 
@@ -764,7 +768,45 @@ void api_TcpStream_peerPort_getter(WrenVM* vm) {
     }
 }
 
-void apiStatic_TcpStream_acceptFrom__1(WrenVM* vm) {
+void apiStatic_TcpStream_connect_2(WrenVM* vm) {
+    bool ok = true;
+    int gaiResult = 0;
+    int* sock = wrenSetSlotNewForeign(vm, 0, 0, sizeof(int));
+    struct addrinfo *res = NULL;
+    *sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (*sock < 0) ok = false;
+    if (ok) {
+        struct addrinfo hints;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        hints.ai_protocol = 0;
+        gaiResult = getaddrinfo(wrenGetSlotString(vm, 1), wrenGetSlotString(vm, 2), &hints, &res);
+        if (gaiResult != 0) {
+            ok = false;
+        }
+    }
+    if (ok) {
+        if (connect(*sock, res->ai_addr, res->ai_addrlen) < 0) {
+            ok = false;
+        }
+    }
+    if (res) freeaddrinfo(res);
+    if (!ok) {
+        if (gaiResult) {
+            wrenSetSlotString(vm, 0, gai_strerror(gaiResult));
+            wrenAbortFiber(vm, 0);
+        } else {
+            abortErrno(vm, errno);
+        }
+        if (*sock >= 0) {
+            (void)close(*sock);
+            *sock = -1;
+        }
+    }
+}
+
+void apiStatic_socket_acceptFrom_1(WrenVM* vm) {
     int* listener = wrenGetSlotForeign(vm, 1);
     int clientFd = accept(*listener, NULL, NULL);
     if (clientFd >= 0) {
@@ -777,7 +819,43 @@ void apiStatic_TcpStream_acceptFrom__1(WrenVM* vm) {
     }
 }
 
-void api_TcpStream_read_1(WrenVM* vm) {
+void apiAllocate_UnixListener(WrenVM* vm) {
+    bool ok = true;
+    int* listener = wrenSetSlotNewForeign(vm, 0, 0, sizeof(int));
+    const char* path = wrenGetSlotString(vm, 1);
+    struct sockaddr_un *addr = NULL;
+    *listener = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (*listener < 0) ok = false;
+    if (ok) {
+        size_t addr_size = sizeof(struct sockaddr_un)+strlen(path)+1;
+        addr = malloc(addr_size);
+        addr->sun_family = AF_UNIX;
+        strcpy(addr->sun_path, path);
+        if (bind(*listener, (struct sockaddr*)(addr), sizeof(struct sockaddr_un)) < 0) {
+            if (errno == EADDRINUSE) {
+                (void)unlink(path);
+                if (bind(*listener, (struct sockaddr*)(addr), sizeof(struct sockaddr_un)) < 0) {
+                    ok = false;
+                }
+            } else {
+                ok = false;
+            }
+        }
+    }
+    if (ok) {
+        if (listen(*listener, 10)) ok = false;
+    }
+    if (addr) free(addr);
+    if (!ok) {
+        abortErrno(vm, errno);
+        if (*listener >= 0) {
+            (void)close(*listener);
+            *listener = -1;
+        }
+    }
+}
+
+void api_socket_read_1(WrenVM* vm) {
     int* sock = wrenGetSlotForeign(vm, 0);
     size_t count = (size_t)wrenGetSlotDouble(vm, 1);
     char buf[count];
@@ -791,7 +869,37 @@ void api_TcpStream_read_1(WrenVM* vm) {
     }
 }
 
-void api_TcpStream_write_1(WrenVM* vm) {
+void apiAllocate_UnixStream(WrenVM* vm) {
+    int* sock = wrenSetSlotNewForeign(vm, 0, 0, sizeof(int));
+}
+
+void apiStatic_UnixStream_connect_1(WrenVM* vm) {
+    bool ok = true;
+    int* sock = wrenSetSlotNewForeign(vm, 0, 0, sizeof(int));
+    const char* path = wrenGetSlotString(vm, 1);
+    struct sockaddr_un *addr = NULL;
+    *sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (*sock < 0) ok = false;
+    if (ok) {
+        size_t addr_size = sizeof(struct sockaddr_un)+strlen(path)+1;
+        addr = malloc(addr_size);
+        addr->sun_family = AF_UNIX;
+        strcpy(addr->sun_path, path);
+        if (connect(*sock, (struct sockaddr*)(addr), sizeof(struct sockaddr_un)) < 0) {
+            ok = false;
+        }
+    }
+    if (addr) free(addr);
+    if (!ok) {
+        abortErrno(vm, errno);
+        if (*sock >= 0) {
+            (void)close(*sock);
+            *sock = -1;
+        }
+    }
+}
+
+void api_socket_write_1(WrenVM* vm) {
     int* sock = wrenGetSlotForeign(vm, 0);
     int count;
     const char* bytes = wrenGetSlotBytes(vm, 1, &count);
@@ -805,7 +913,7 @@ void api_TcpStream_write_1(WrenVM* vm) {
     }
 }
 
-void apiStatic_Deque_fastCopy__4(WrenVM *vm) {
+void apiStatic_Deque_fastCopy_4(WrenVM *vm) {
     // list, destStart, sourceStart, count
     // Moves count items from [sourceStart...sourceStart+count] to [destStart...destStart+count].
     // The items are assumed to be non-overlapping.
@@ -1043,21 +1151,44 @@ void initBuiltins(void) {
     ggRegisterMethod("TcpListener", "fd", &api_socket_fd_getter);
 
     ggRegisterClass("TcpStream", &apiAllocate_TcpStream, &apiFinalize_socket);
-    ggRegisterMethod("TcpStream", "static acceptFrom_(_)", &apiStatic_TcpStream_acceptFrom__1);
+    ggRegisterMethod("TcpStream", "static connect(_,_)", &apiStatic_TcpStream_connect_2);
+    ggRegisterMethod("TcpStream", "static acceptFrom_(_)", &apiStatic_socket_acceptFrom_1);
+
     ggRegisterMethod("TcpStream", "blocking", &api_socket_blocking_getter);
     ggRegisterMethod("TcpStream", "blocking=(_)", &api_socket_blocking_setter);
     ggRegisterMethod("TcpStream", "close()", &api_socket_close_0);
-    ggRegisterMethod("TcpStream", "read(_)", &api_TcpStream_read_1);
-    ggRegisterMethod("TcpStream", "peerAddress", &api_TcpStream_peerAddress_getter);
-    ggRegisterMethod("TcpStream", "peerPort", &api_TcpStream_peerPort_getter);
-    ggRegisterMethod("TcpStream", "write(_)", &api_TcpStream_write_1);
+    ggRegisterMethod("TcpStream", "read(_)", &api_socket_read_1);
+    ggRegisterMethod("TcpStream", "write(_)", &api_socket_write_1);
     ggRegisterMethod("TcpStream", "isOpen", &api_socket_isOpen_getter);
     ggRegisterMethod("TcpStream", "fd", &api_socket_fd_getter);
+
+    ggRegisterMethod("TcpStream", "peerAddress", &api_TcpStream_peerAddress_getter);
+    ggRegisterMethod("TcpStream", "peerPort", &api_TcpStream_peerPort_getter);
+
+    ggRegisterClass("UnixListener", &apiAllocate_UnixListener, &apiFinalize_socket);
+    ggRegisterMethod("UnixListener", "blocking", &api_socket_blocking_getter);
+    ggRegisterMethod("UnixListener", "blocking=(_)", &api_socket_blocking_setter);
+    ggRegisterMethod("UnixListener", "close()", &api_socket_close_0);
+    ggRegisterMethod("UnixListener", "isOpen", &api_socket_isOpen_getter);
+    ggRegisterMethod("UnixListener", "fd", &api_socket_fd_getter);
+
+    ggRegisterClass("UnixStream", &apiAllocate_UnixStream, &apiFinalize_socket);
+    ggRegisterMethod("UnixStream", "static connect(_,_)", &apiStatic_UnixStream_connect_1);
+    ggRegisterMethod("UnixStream", "static acceptFrom_(_)", &apiStatic_socket_acceptFrom_1);
+
+    ggRegisterMethod("UnixStream", "blocking", &api_socket_blocking_getter);
+    ggRegisterMethod("UnixStream", "blocking=(_)", &api_socket_blocking_setter);
+    ggRegisterMethod("UnixStream", "close()", &api_socket_close_0);
+    ggRegisterMethod("UnixStream", "read(_)", &api_socket_read_1);
+    ggRegisterMethod("UnixStream", "write(_)", &api_socket_write_1);
+    ggRegisterMethod("UnixStream", "isOpen", &api_socket_isOpen_getter);
+    ggRegisterMethod("UnixStream", "fd", &api_socket_fd_getter);
+
 
     ggRegisterClass("Poll", &apiAllocate_Poll, &apiFinalize_Poll);
     ggRegisterMethod("Poll", "poll(_,_,_)", &api_Poll_poll_3);
 
-    ggRegisterMethod("Deque", "static fastCopy_(_,_,_,_)", &apiStatic_Deque_fastCopy__4);
+    ggRegisterMethod("Deque", "static fastCopy_(_,_,_,_)", &apiStatic_Deque_fastCopy_4);
     ggRegisterMethod("Term", "static prompt()", &apiStatic_Term_prompt_0);
 
     ggRegisterClass("U32Array", &apiAllocate_U32Array, NULL);
