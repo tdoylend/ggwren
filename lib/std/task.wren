@@ -26,37 +26,45 @@
 
 import "std.assert" for Assert
 import "std.io.poll" for Poll
-import "std.named_singleton" for NamedSingleton
 import "std.structures" for Deque
 import "std.time" for Time
+
 import "gg" for GG
 
-class TaskExitSignal { 
-    construct new(reason) {
-        _reason = reason 
+class Entry {
+    construct new(task) {
+        _task = task
+        _wakeTime = -Num.infinity
+        _wakeFD = null
+        _wakeFDEvents = null
+        _wakeTask = null
+        _isDone = false
     }
-    reason { _reason }
-}
-
-class Listener {
-    construct new() {
-        _fd = null
-        _events = null
+    isDone { _isDone = _isDone || _task.isDone }
+    task { _task }
+    active { _active }
+    active=(v) { _active = v }
+    wakeTime { _wakeTime }
+    wakeTime=(v) { _wakeTime = v }
+    wakeFD { _wakeFD }
+    wakeFD=(v) { _wakeFD = v }
+    wakeFDEvents { _wakeFDEvents }
+    wakeFDEvents=(v) { _wakeFDEvents=(v) }
+    wakeTask { _wakeTask }
+    wakeTask=(v) { _wakeTake = v }
+    wake() {
+        _wakeTime = -Num.infinity
+        _wakeFD = null
+        _wakeFDEvents = null
+        _wakeTask = null
     }
-
-    events { _events }
-    events=(value) { _events = value }
-    fd { _fd }
-    fd=(value) { _fd = value }
 }
 
 class Task {
     construct new(queue) {
-        _rendezvous = 0
         _name = null
         _fiber = Fiber.new{ this.run( ) }
         _exited = false
-
         _queue = queue
         _entry = _queue.add(this)
     }
@@ -67,127 +75,87 @@ class Task {
     queue { _queue }
     toString { _name }
 
-    logError(msg) { System.print("[error in %(name)] %(msg)") }
-    logExit(reason) {
-        if (reason) System.print("[%(name) exited early] %(reason)")
+    isDone { _fiber.isDone || _exited }
+
+    logError(message) { System.print("[error in %(name)] %(message)") }
+
+    wake() { _entry.wake() }
+
+    sleep(dt) {
+        _entry.wakeTime = _queue.now + dt
+        Fiber.yield()
     }
 
-    wake() {
-        _entry.wake()
-    }
-    sleep(dt) {
-        _entry.active = false
-        _entry.wakeAt = _queue.now + dt
+    sleepUntil(time) {
+        _entry.wakeTime = time
         Fiber.yield()
     }
+
     sleep {
+        _entry.wakeTime = Num.infinity
+        Fiber.yield()
+    }
+
+    sleepOnIO(stream, events) { sleepOnIO(stream, events, Num.infinity) }
+    sleepOnIO(stream, events, timeout) {
+        _entry.wakeFD = stream.fd
+        _entry.wakeFDEvents = events
+        _entry.wakeTime = _queue.now + timeout
+        Fiber.yield()
+    }
+
+    sleepOnTask(task) { sleepOnTask(task, Num.infinity) }
+    sleepOnTask(task, timeout) {
+        _entry.wakeTask = task
+        _entry.wakeTime = _queue.now + timeout
         _entry.active = false
         Fiber.yield()
     }
+
     yield {
         Fiber.yield()
     }
-    sleepFD(fd, events) {
-        _listener = _listener || Listener.new()
-        _listener.fd = fd
-        _listener.events = events
-        _entry.active = false
-        _entry.listeners.clear()
-        _entry.listeners.add(_listener)
+
+    exit {
+        _exited = true
         Fiber.yield()
     }
-    sleepFD(fd, events, timeout) {
-        _listener = _listener || Listener.new()
-        _listener.fd = fd
-        _listener.events = events
-        _entry.active = false
-        _entry.listeners.clear()
-        _entry.listeners.add(_listener)
-        _entry.wakeAt = _queue.now + timeout
-        Fiber.yield()
-    }
-
-    exit(reason) { Fiber.yield(TaskExitSignal.new(reason)) }
-    static exit(reason) { Fiber.yield(TaskExitSignal.new(reason)) }
-
-    isDone { fiber.isDone || _exited }
 
     resume() {
-        assert (!fiber.isDone)
-        assert (!_exited)
-        var r = fiber.try()
-        if (r is Num) {
-            _entry.wakeTime = r
-        } else if (r is TaskExitSignal) {
-            _exited = true
-            logExit(r.reason)
-        }
-        if (fiber.error) {
-            logError(GG.error.trim())
-        }
-        return fiber.isDone || _exited
+        Assert.assert (!isDone)
+        var result = fiber.try()
+        if (fiber.error) logError(GG.error.trim())
+        return result
     }
 
     finish() {
-        /* Override this method in your subclass to provide an endpoint to run after the main fiber
-         * finishes. This is a good place to run cleanup code that closes files, frees textures,
-         * etc. */
     }
+
     run() {
-        Fiber.abort("This method is not implemented on Task; override it "+
+        Fiber.abort("This method is not implemented on Task; override it " +
                 "in your subclass with your own implementation.")
     }
 }
-Assert.mixin(Task)
 
-class TaskEntry {
-    construct new(task) {
-        _id = Object.address(task)
-        _task = task
-        _active = true
-        _wakeAt = null
-        _listeners = []
-    }
-
-    wake() {
-        _active = true
-        _wakeAt = null
-        _listeners.clear()
-    }
-
-    active { _active }
-    active=(value) { _active=value }
-
-    wakeAt { _wakeAt }
-    wakeAt=(value) { _wakeAt=value }
-
-    listeners { _listeners }
-    task { _task }
-
-    id { _id }
-}
-
-class TaskQueue {
+class TaskQueue is Sequence {
     construct new() {
-        _tasks = Deque.new()
-        _running = null
-
-        _wakeAfterSleep = []
-
+        _entries = Deque.new()
+        _toResume = []
         _poll = null
-
         _pollFDs = []
         _pollEvents = []
         _pollEntries = []
     }
 
-    add(task) { 
-        var entry = TaskEntry.new(task)
-        _tasks.addFront(entry)
+    iterate(iterator) { _entries.iterate(iterator) }
+    iteratorValue(iterator) { _entries.iteratorValue(iterator).task }
+    count { _entries.count }
+
+    add(task) {
+        var entry = Entry.new(task)
+        _entries.addFront(entry)
         return entry
     }
-
-    count { _tasks.count + (_running ? 1 : 0) }
 
     now { Time.now }
 
@@ -197,52 +165,48 @@ class TaskQueue {
 
     update() {
         var now = this.now
-        var nextWake = null
-        var anyActiveNow = false
-        _wakeAfterSleep.clear()
-        for (i in 0..._tasks.count) {
-            _running = _tasks.popBack()
-            if (_running.wakeAt) {
-                if (_running.wakeAt <= now) {
-                    _running.wake()
-                } else if (!nextWake || (nextWake > _running.wakeAt)) {
-                    _wakeAfterSleep.clear()
-                    nextWake = _running.wakeAt
-                    _wakeAfterSleep.add(_running)
-                } else if (nextWake == _running.wakeAt) {
-                    _wakeAfterSleep.add(_running)
-                }
+        var timeout = Num.infinity
+        for (i in 0..._entries.count) {
+            var entry = _entries.popBack()
+            if (entry.isDone) continue
+            var entrySleepTime
+            if (entry.wakeTask && entry.wakeTask.isDone) {
+                entrySleepTime = 0
+            } else if (entry.wakeTime <= now) {
+                entrySleepTime = 0
+            } else {
+                entrySleepTime = entry.wakeTime - now
             }
-            for (listener in _running.listeners) {
-                _pollFDs.add(listener.fd)
-                _pollEvents.add(listener.events)
-                _pollEntries.add(_running)
+            if (entrySleepTime == timeout) {
+                _toResume.add(entry)
+            } else if (entrySleepTime < timeout) {
+                timeout = entrySleepTime
+                _toResume.clear()
+                _toResume.add(entry)
             }
-            if (_running.active) anyActiveNow = true
-            _tasks.addFront(_running)
-            _running = null
+            if (entry.wakeFD) {
+                _pollFDs.add(entry.wakeFD)
+                _pollEvents.add(entry.wakeFDEvents)
+                _pollEntries.add(entry)
+            }
+            _entries.addFront(entry)
         }
-
-        var timeout
-        if (anyActiveNow) {
-            timeout = 0
-            _wakeAfterSleep.clear()
-        } else if (nextWake) {
-            timeout = nextWake - now
-        } else {
-            timeout = -1
-        }
+        // If, for example, we sleep for 500ms but get interrupted by a signal 250ms into the
+        // sleep, we don't call anything in _toResumeIfSleepCompletes, because they're waiting
+        // for 500ms.
+        if (timeout == Num.infinity) timeout = -1
 
         if (_pollFDs.count > 0) {
-            if (!_poll) _poll = Poll.new()
+            _poll = _poll || Poll.new()
             var result = _poll.poll(_pollFDs, _pollEvents, timeout)
-            for (i in 0..._pollEvents.count) {
-                if (_pollEvents[i] > 0) {
-                    _pollEntries[i].wake()
+            if (result > 0) {
+                _toResume.clear()
+                for (i in 0..._pollEvents.count) {
+                    if (_pollEvents[i] > 0) {
+                        var entry = _pollEntries[i]
+                        _toResume.add(entry)
+                    }
                 }
-            }
-            if (result == 0) {
-                for (entry in _wakeAfterSleep) entry.wake()
             }
             _pollFDs.clear()
             _pollEvents.clear()
@@ -250,33 +214,22 @@ class TaskQueue {
         } else {
             if (timeout > 0) {
                 Time.sleep(timeout)
-                for (entry in _wakeAfterSleep) entry.wake()
             } else if (timeout == 0) {
                 /* do nothing */
             } else {
                 Fiber.abort("All tasks are sleeping. Please send a handsome prince.")
             }
         }
-        _wakeAfterSleep.clear()
 
-        for (i in 0..._tasks.count) {
-            _running = _tasks.popBack()
-            if (_running.active) {
-                var done = _running.task.resume()
-                if (done) {
-                    var f = Fiber.new{ _running.task.finish() }
-                    f.try()
-                    if (f.error) {
-                        _running.task.logError(GG.error.trim())
-                    }
-                } else {
-                    _tasks.addFront(_running)
-                }
-            } else {
-                _tasks.addFront(_running)
+        for (entry in _toResume) {
+            entry.wake()
+            entry.task.resume()
+            if (entry.isDone) {
+                var f = Fiber.new{ entry.task.finish() }
+                f.try()
+                if (f.error) entry.task.logError(GG.error.trim())
             }
-            _running = null
         }
+        _toResume.clear()
     }
 }
-Assert.mixin(TaskQueue)
