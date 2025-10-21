@@ -460,6 +460,18 @@ void apiConfig_write(WrenVM* vm, const char* text) {
     printf("%s", text);
 }
 
+const char* apiConfig_input(WrenVM* vm) {
+    char* line = NULL;
+    size_t n;
+    ssize_t count = getline(&line, &n, stdin);
+    if (count && line[count-1] == '\n') {
+        count --;
+        if (count && line[count-1] == '\r') count --;
+    }
+    line[count] = 0;
+    return line;
+}
+
 void apiConfig_error(
     WrenVM* vm,
     WrenErrorType type,
@@ -835,6 +847,7 @@ int main(int argc_, char** argv_) {
         case RUN_SCRIPT: if (status == OK) {
             wrenInitConfiguration(&config);
             config.writeFn = &apiConfig_write;
+            config.readFn = &apiConfig_input;
             config.errorFn = &apiConfig_error;
             config.bindForeignMethodFn = &apiConfig_bindForeignMethod;
             config.bindForeignClassFn = &apiConfig_bindForeignClass;
